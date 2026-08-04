@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple "eye + path" glyph -->
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M54,38 C40,38 30,50 27,54 C30,58 40,70 54,70 C68,70 78,58 81,54 C78,50 68,38 54,38 Z" />
+    <path
+        android:fillColor="#1A1C2C"
+        android:pathData="M54,45 A9,9 0 1,0 54,63 A9,9 0 1,0 54,45 Z" />
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M50,74 L58,74 L56,88 L52,88 Z" />
+</vector>

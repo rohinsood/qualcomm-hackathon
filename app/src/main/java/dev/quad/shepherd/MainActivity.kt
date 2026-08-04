@@ -1,0 +1,183 @@
+package dev.quad.shepherd
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Bundle
+import android.view.WindowManager
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import dev.quad.shepherd.actuator.CaneActuator
+import dev.quad.shepherd.actuator.NoOpActuator
+import dev.quad.shepherd.databinding.ActivityMainBinding
+import dev.quad.shepherd.feedback.HapticFeedback
+import dev.quad.shepherd.feedback.SpeechFeedback
+import dev.quad.shepherd.guidance.GuidanceEngine
+import dev.quad.shepherd.llm.ClaudeSceneDescriber
+import dev.quad.shepherd.llm.SceneDescriber
+import dev.quad.shepherd.vision.Detection
+import dev.quad.shepherd.vision.DetectionEngine
+import dev.quad.shepherd.vision.FrameAnalyzer
+import dev.quad.shepherd.vision.FrameResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityMainBinding
+    private val engine = DetectionEngine()
+    private val guidanceEngine = GuidanceEngine()
+    private lateinit var speech: SpeechFeedback
+    private lateinit var haptics: HapticFeedback
+    private val actuator: CaneActuator = NoOpActuator()
+    private var describer: SceneDescriber? = null
+
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+
+    @Volatile private var latestFrame: Bitmap? = null
+    @Volatile private var latestDetections: List<Detection> = emptyList()
+    @Volatile private var guidanceEnabled = true
+    @Volatile private var describing = false
+
+    private val cameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startEngine()
+        else {
+            binding.statusText.text = getString(R.string.camera_permission_needed)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        speech = SpeechFeedback(this)
+        haptics = HapticFeedback(this)
+        describer = if (BuildConfig.CLAUDE_API_KEY.isNotBlank()) ClaudeSceneDescriber() else null
+
+        binding.describeButton.isEnabled = describer != null
+        if (describer == null) {
+            binding.describeButton.text = getString(R.string.describe_disabled)
+        }
+        binding.describeButton.setOnClickListener { describeScene() }
+        binding.audioToggle.isChecked = true
+        binding.audioToggle.setOnCheckedChangeListener { _, checked ->
+            guidanceEnabled = checked
+        }
+
+        actuator.connect()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startEngine()
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun startEngine() {
+        binding.statusText.text = getString(R.string.loading_model)
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) { engine.initialize(this@MainActivity) }
+            if (!ok) {
+                binding.statusText.text = getString(R.string.model_missing)
+                speech.announce(getString(R.string.model_missing), urgent = true)
+                return@launch
+            }
+            binding.statusText.text = engine.activeProvider
+            bindCamera()
+        }
+    }
+
+    private fun bindCamera() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            val provider = providerFuture.get()
+
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+            analysis.setAnalyzer(analysisExecutor, FrameAnalyzer(engine, ::onFrame))
+
+            provider.unbindAll()
+            provider.bindToLifecycle(
+                this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
+            )
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun onFrame(result: FrameResult) {
+        latestFrame = result.frame
+        latestDetections = result.detections
+
+        val guidance = guidanceEngine.update(result.detections, result.frameWidth)
+        actuator.sendGuidance(guidance)
+
+        runOnUiThread {
+            binding.overlay.render(result, guidance)
+            binding.statusText.text = getString(
+                R.string.status_format,
+                engine.activeProvider,
+                result.latencyMs,
+                result.detections.size,
+            )
+            if (guidanceEnabled) {
+                haptics.update(guidance)
+                guidance.message?.let { msg ->
+                    speech.announce(
+                        msg,
+                        urgent = guidance.severity == GuidanceEngine.Severity.DANGER,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun describeScene() {
+        val d = describer ?: return
+        val frame = latestFrame ?: run {
+            Toast.makeText(this, R.string.no_frame_yet, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (describing) return
+        describing = true
+        binding.describeButton.isEnabled = false
+        speech.announce(getString(R.string.describing), urgent = true)
+
+        lifecycleScope.launch {
+            val text = try {
+                d.describe(frame, latestDetections)
+            } catch (e: Exception) {
+                getString(R.string.describe_failed)
+            }
+            speech.announce(text, urgent = true)
+            describing = false
+            binding.describeButton.isEnabled = true
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        speech.shutdown()
+        actuator.disconnect()
+        analysisExecutor.shutdown()
+        engine.close()
+    }
+}

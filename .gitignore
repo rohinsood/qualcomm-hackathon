@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+
+# Model binaries are fetched per-developer (AI Hub licensing) — never committed
+app/src/main/assets/*.onnx
+app/src/main/assets/*.bin
+app/src/main/assets/*.dlc
+scripts/build/
