@@ -100,8 +100,13 @@ class NavEngine(
                     speak("I can't get a GPS fix yet. Try again outside.")
                     return@launch
                 }
-                val dest = RoutesClient.geocode(destinationText) ?: run {
-                    speak("I couldn't find $destinationText.")
+                val dest = RoutesClient.geocode(
+                    destinationText, here.latitude, here.longitude,
+                ) ?: run {
+                    speak(
+                        "I couldn't find \"$destinationText\" nearby. " +
+                            "Try a street address or the full place name."
+                    )
                     return@launch
                 }
                 val route = RoutesClient.walkingRoute(here.latitude, here.longitude, dest)

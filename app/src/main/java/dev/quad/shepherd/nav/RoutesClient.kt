@@ -23,26 +23,77 @@ object RoutesClient {
 
     data class Destination(val lat: Double, val lng: Double, val label: String)
 
-    fun geocode(text: String): Destination? = try {
-        val url = "https://maps.googleapis.com/maps/api/geocode/json?address=" +
-            URLEncoder.encode(text, "UTF-8") + "&key=" + BuildConfig.MAPS_API_KEY
-        val body = get(url) ?: throw RuntimeException("no response")
-        val json = JSONObject(body)
-        val results = json.getJSONArray("results")
-        if (results.length() == 0) {
-            Log.w(TAG, "geocode: zero results (${json.optString("status")})")
+    /**
+     * Destination text -> place. Geocoding first (addresses, landmarks),
+     * biased to a box around the walker; ZERO_RESULTS falls back to Places
+     * Text Search so spoken business names ("the pharmacy", "Joe's cafe")
+     * resolve to the nearest match.
+     */
+    fun geocode(text: String, nearLat: Double, nearLng: Double): Destination? {
+        Log.i(TAG, "resolving destination: \"$text\" near $nearLat,$nearLng")
+        try {
+            val bias = "&bounds=${nearLat - 0.35},${nearLng - 0.35}%7C" +
+                "${nearLat + 0.35},${nearLng + 0.35}"
+            val url = "https://maps.googleapis.com/maps/api/geocode/json?address=" +
+                URLEncoder.encode(text, "UTF-8") + bias + "&key=" + BuildConfig.MAPS_API_KEY
+            val body = get(url) ?: throw RuntimeException("no response")
+            val json = JSONObject(body)
+            val results = json.getJSONArray("results")
+            if (results.length() > 0) {
+                val first = results.getJSONObject(0)
+                val loc = first.getJSONObject("geometry").getJSONObject("location")
+                return Destination(
+                    lat = loc.getDouble("lat"),
+                    lng = loc.getDouble("lng"),
+                    label = first.optString("formatted_address", text).substringBefore(','),
+                )
+            }
+            Log.w(TAG, "geocode: zero results (${json.optString("status")}), trying Places")
+        } catch (e: Exception) {
+            Log.w(TAG, "geocode failed", e)
+        }
+        return placesSearch(text, nearLat, nearLng)
+    }
+
+    /** Places Text Search (New), biased to a 3 km circle around the walker. */
+    private fun placesSearch(text: String, nearLat: Double, nearLng: Double): Destination? = try {
+        val request = JSONObject()
+            .put("textQuery", text)
+            .put("pageSize", 1)
+            .put(
+                "locationBias",
+                JSONObject().put(
+                    "circle",
+                    JSONObject()
+                        .put(
+                            "center",
+                            JSONObject()
+                                .put("latitude", nearLat)
+                                .put("longitude", nearLng),
+                        )
+                        .put("radius", 3000.0),
+                ),
+            )
+        val body = post(
+            "https://places.googleapis.com/v1/places:searchText",
+            request.toString(),
+            fieldMask = "places.displayName,places.location",
+        ) ?: throw RuntimeException("no response")
+        val places = JSONObject(body).optJSONArray("places")
+        if (places == null || places.length() == 0) {
+            Log.w(TAG, "places: zero results")
             null
         } else {
-            val first = results.getJSONObject(0)
-            val loc = first.getJSONObject("geometry").getJSONObject("location")
+            val place = places.getJSONObject(0)
+            val loc = place.getJSONObject("location")
             Destination(
-                lat = loc.getDouble("lat"),
-                lng = loc.getDouble("lng"),
-                label = first.optString("formatted_address", text).substringBefore(','),
+                lat = loc.getDouble("latitude"),
+                lng = loc.getDouble("longitude"),
+                label = place.optJSONObject("displayName")?.optString("text") ?: text,
             )
         }
     } catch (e: Exception) {
-        Log.w(TAG, "geocode failed", e)
+        Log.w(TAG, "places search failed", e)
         null
     }
 
