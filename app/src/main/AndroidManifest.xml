@@ -6,8 +6,13 @@
     <!-- Push-to-talk conversation. Recognition runs on-device (API 31+
          on-device recognizer); audio never leaves the phone. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- Only needed for GenieX's one-time model download -->
+    <!-- One-time model downloads only (GenieX SLM, Kokoro voice) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The guidance pipeline runs as a camera foreground service so it
+         survives the screen turning off / phone in a pocket -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -33,6 +38,11 @@
         <uses-native-library
             android:name="libOpenCL.so"
             android:required="false" />
+
+        <service
+            android:name=".service.ShepherdService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
 
         <activity
             android:name=".MainActivity"
