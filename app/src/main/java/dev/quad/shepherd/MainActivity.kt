@@ -29,7 +29,6 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.PolylineOptions
@@ -355,24 +354,35 @@ class MainActivity : AppCompatActivity() {
             nav.destLatLng?.let {
                 map.addMarker(MarkerOptions().position(LatLng(it[0], it[1])))
             }
-            runCatching {
-                val bounds = LatLngBounds.builder()
-                route.forEach { bounds.include(LatLng(it[0], it[1])) }
-                // The explicit-dimensions overload: the plain one reads the
-                // view size, which is 0 the moment visibility flips, and the
-                // zoom collapses to state level
-                val density = resources.displayMetrics.density
-                val side = (160 * density).toInt()
-                map.moveCamera(
-                    CameraUpdateFactory.newLatLngBounds(
-                        bounds.build(), side, side, (16 * density).toInt(),
-                    )
-                )
-            }.onFailure {
-                map.moveCamera(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(route[0][0], route[0][1]), 16f)
-                )
+            // Lite-mode maps don't honor bounds-based camera updates (they
+            // collapse to world zoom), so compute the zoom ourselves from
+            // the route's span and the panel's pixel size, and use
+            // newLatLngZoom — which lite mode supports properly.
+            var minLat = route[0][0]
+            var maxLat = route[0][0]
+            var minLng = route[0][1]
+            var maxLng = route[0][1]
+            for (p in route) {
+                if (p[0] < minLat) minLat = p[0]
+                if (p[0] > maxLat) maxLat = p[0]
+                if (p[1] < minLng) minLng = p[1]
+                if (p[1] > maxLng) maxLng = p[1]
             }
+            val centerLat = (minLat + maxLat) / 2
+            val centerLng = (minLng + maxLng) / 2
+            val cosLat = Math.cos(Math.toRadians(centerLat))
+            val spanMeters = maxOf(
+                (maxLat - minLat) * 110_540.0,
+                (maxLng - minLng) * 111_320.0 * cosLat,
+                120.0,
+            )
+            val viewPx = 160.0 * resources.displayMetrics.density
+            // meters-per-pixel at zoom z: 156543 * cos(lat) / 2^z
+            val zoom = (Math.log(156_543.03392 * cosLat * viewPx * 0.8 / spanMeters) /
+                Math.log(2.0)).toFloat().coerceIn(3f, 18f)
+            map.moveCamera(
+                CameraUpdateFactory.newLatLngZoom(LatLng(centerLat, centerLng), zoom)
+            )
         }
         nav.lastLatLng?.let { pos ->
             val here = LatLng(pos[0], pos[1])
