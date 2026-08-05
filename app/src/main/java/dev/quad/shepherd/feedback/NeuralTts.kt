@@ -170,13 +170,15 @@ class NeuralTts private constructor(
             }
             try {
                 val speed = if (item.urgent) URGENT_SPEED else NORMAL_SPEED
-                tts.generateWithCallback(item.text, SPEAKER_ID, speed) { samples ->
-                    if (closed || gen != generation.get()) {
-                        0 // abort synthesis
-                    } else {
-                        write(samples)
-                        1
-                    }
+                // generate(), NOT generateWithCallback(): the JNI callback
+                // path fatally aborts under Kotlin 2.x invokedynamic
+                // lambdas — D8's synthetic class lacks the specialized
+                // invoke([F)Integer method the native side looks up.
+                // Per-sentence synthesis is 0.2-0.5 s at int8; playback
+                // below is sliced so stopAll still cuts in fast.
+                val audio = tts.generate(item.text, SPEAKER_ID, speed)
+                if (!closed && gen == generation.get()) {
+                    write(audio.samples, gen)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "synthesis failed for: ${item.text.take(60)}", e)
@@ -190,10 +192,12 @@ class NeuralTts private constructor(
         if (item.chat) synchronized(this) { if (chatPending > 0) chatPending-- }
     }
 
-    private fun write(samples: FloatArray) {
+    /** Blocking sliced playback; a generation bump cancels between slices. */
+    private fun write(samples: FloatArray, gen: Long) {
         var off = 0
-        while (off < samples.size && !closed) {
-            val n = track.write(samples, off, samples.size - off, AudioTrack.WRITE_BLOCKING)
+        val slice = 6000 // 0.25 s at 24 kHz
+        while (off < samples.size && !closed && gen == generation.get()) {
+            val n = track.write(samples, off, minOf(slice, samples.size - off), AudioTrack.WRITE_BLOCKING)
             if (n <= 0) break
             off += n
         }
