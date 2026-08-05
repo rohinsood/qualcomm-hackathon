@@ -52,13 +52,13 @@
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/describeButton"
+        android:id="@+id/talkButton"
         android:layout_width="match_parent"
         android:layout_height="72dp"
         android:layout_gravity="bottom"
         android:layout_margin="16dp"
         android:layout_marginBottom="32dp"
-        android:text="@string/describe_button"
+        android:text="@string/talk_button"
         android:textSize="18sp"
-        android:contentDescription="@string/describe_button_a11y" />
+        android:contentDescription="@string/talk_button_a11y" />
 </FrameLayout>

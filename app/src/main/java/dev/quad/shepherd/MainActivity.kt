@@ -1,13 +1,15 @@
 package dev.quad.shepherd
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -20,7 +22,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
-import android.view.ViewGroup
 import androidx.lifecycle.lifecycleScope
 import dev.quad.shepherd.actuator.CaneActuator
 import dev.quad.shepherd.actuator.NoOpActuator
@@ -29,15 +30,17 @@ import dev.quad.shepherd.feedback.HapticFeedback
 import dev.quad.shepherd.feedback.SpeechFeedback
 import dev.quad.shepherd.guidance.AnnouncementPolicy
 import dev.quad.shepherd.guidance.GuidanceEngine
-import dev.quad.shepherd.llm.ClaudeSceneDescriber
+import dev.quad.shepherd.guidance.SceneBlackboard
 import dev.quad.shepherd.llm.GenieBench
-import dev.quad.shepherd.llm.SceneDescriber
-import dev.quad.shepherd.vision.Detection
+import dev.quad.shepherd.llm.GenieChat
+import dev.quad.shepherd.llm.GenieRuntime
+import dev.quad.shepherd.speech.VoiceInput
 import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
 import dev.quad.shepherd.vision.FrameAnalyzer
 import dev.quad.shepherd.vision.FrameResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
@@ -49,29 +52,43 @@ class MainActivity : AppCompatActivity() {
     private val depthEngine = DepthEngine()
     private val guidanceEngine = GuidanceEngine()
     private val announcer = AnnouncementPolicy()
+    private val blackboard = SceneBlackboard()
+    private val genieChat = GenieChat()
     private lateinit var speech: SpeechFeedback
     private lateinit var haptics: HapticFeedback
     private val actuator: CaneActuator = NoOpActuator()
-    private var describer: SceneDescriber? = null
     private var analyzer: FrameAnalyzer? = null
+    private var voice: VoiceInput? = null
 
     private val analysisExecutor = Executors.newSingleThreadExecutor()
 
-    @Volatile private var latestFrame: Bitmap? = null
-    @Volatile private var latestDetections: List<Detection> = emptyList()
     @Volatile private var guidanceEnabled = true
-    @Volatile private var describing = false
     @Volatile private var benching = false
+    @Volatile private var chatWarming = false
+    private var talkHeld = false
 
-    private val cameraPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) startEngine()
-        else {
-            binding.statusText.text = getString(R.string.camera_permission_needed)
+    private val permissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        grants[Manifest.permission.CAMERA]?.let { granted ->
+            if (granted) startEngine()
+            else binding.statusText.text = getString(R.string.camera_permission_needed)
+        }
+        if (grants[Manifest.permission.RECORD_AUDIO] == false) {
+            speech.announce("Microphone permission denied. Hold to talk is disabled.")
         }
     }
 
+    private val audioPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        speech.announce(
+            if (granted) "Microphone ready. Hold the button to talk."
+            else "Microphone permission denied."
+        )
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -84,7 +101,7 @@ class MainActivity : AppCompatActivity() {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val density = resources.displayMetrics.density
             binding.topBar.updatePadding(top = (8 * density).toInt() + bars.top)
-            binding.describeButton.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+            binding.talkButton.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 bottomMargin = (16 * density).toInt() + bars.bottom
             }
             binding.overlay.bottomInset = bars.bottom
@@ -93,19 +110,28 @@ class MainActivity : AppCompatActivity() {
 
         speech = SpeechFeedback(this)
         haptics = HapticFeedback(this)
-        describer = if (BuildConfig.CLAUDE_API_KEY.isNotBlank()) ClaudeSceneDescriber() else null
 
-        // Always enabled: short-press = cloud scene description (needs API
-        // key), long-press = on-device SLM benchmark (step 0)
-        if (describer == null) {
-            binding.describeButton.text = getString(R.string.describe_disabled)
+        // Phase 1: the big bottom button is push-to-talk for the companion
+        binding.talkButton.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startTalking()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.performClick()
+                    stopTalking()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    stopTalking()
+                    true
+                }
+                else -> false
+            }
         }
-        binding.describeButton.setOnClickListener {
-            if (describer != null) describeScene()
-            else Toast.makeText(this, R.string.bench_hint, Toast.LENGTH_LONG).show()
-        }
-        // Step-0 SLM bake-off: long-press runs Qwen3.5-2B on NPU/GPU/CPU
-        binding.describeButton.setOnLongClickListener {
+        // Dev tool: long-press the status line for the SLM bake-off
+        binding.statusText.setOnLongClickListener {
             benchLlm()
             true
         }
@@ -119,13 +145,16 @@ class MainActivity : AppCompatActivity() {
 
         actuator.connect()
 
+        val wanted = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            startEngine()
-        } else {
-            cameraPermission.launch(Manifest.permission.CAMERA)
-        }
+            != PackageManager.PERMISSION_GRANTED
+        ) wanted += Manifest.permission.CAMERA
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) wanted += Manifest.permission.RECORD_AUDIO
+
+        if (Manifest.permission.CAMERA !in wanted) startEngine()
+        if (wanted.isNotEmpty()) permissionsLauncher.launch(wanted.toTypedArray())
     }
 
     private fun startEngine() {
@@ -143,6 +172,21 @@ class MainActivity : AppCompatActivity() {
             }
             binding.statusText.text = providerLabel()
             bindCamera()
+            warmChat()
+        }
+    }
+
+    /** Load the companion SLM onto the NPU in the background. */
+    private fun warmChat() {
+        if (chatWarming || genieChat.ready) return
+        chatWarming = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            val ok = genieChat.warmUp(this@MainActivity) { msg -> Log.i("GenieChat", msg) }
+            chatWarming = false
+            speech.announce(
+                if (ok) "Companion ready. Hold the bottom button to talk."
+                else "Companion failed to load. ${genieChat.failure ?: ""}"
+            )
         }
     }
 
@@ -176,13 +220,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onFrame(result: FrameResult) {
-        latestFrame = result.frame
-        latestDetections = result.detections
-
         val now = SystemClock.elapsedRealtime()
         val guidance = guidanceEngine.update(
             result.detections, result.frameWidth, result.columnDistances, now,
         )
+        blackboard.updateFrame(result.detections, result.frameWidth)
+        blackboard.updateGuidance(guidance)
         actuator.sendGuidance(guidance)
 
         runOnUiThread {
@@ -197,18 +240,125 @@ class MainActivity : AppCompatActivity() {
             }
             if (guidanceEnabled) {
                 haptics.update(guidance)
-                announcer.decide(guidance, now)?.let {
-                    speech.announce(it.text, interrupt = it.interrupt, urgent = it.urgent)
-                }
+                announcer.decide(guidance, now)?.let { arbitrate(it, now) }
             }
         }
     }
 
-    /** Step-0 bake-off: Qwen3.5-2B via GenieX on each compute unit. */
+    /**
+     * Final speech arbitration between safety alerts and companion chat:
+     * any danger cuts the companion off mid-sentence (and the model is told
+     * about it), while cautions never talk over the conversation — the
+     * policy re-offers them on its own cadence once the chat goes quiet.
+     */
+    private fun arbitrate(u: AnnouncementPolicy.Utterance, now: Long) {
+        val chatBusy = genieChat.busy || speech.chatActive
+        when {
+            !chatBusy -> speech.announce(u.text, u.interrupt, u.urgent)
+            u.urgent -> {
+                genieChat.requestStop(u.text)
+                speech.announce(u.text, interrupt = true, urgent = true)
+            }
+            else -> return
+        }
+        blackboard.noteAlert(u.text, now)
+    }
+
+    // ---- Push-to-talk conversation -------------------------------------
+
+    private fun startTalking() {
+        if (talkHeld) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (!genieChat.ready) {
+            if (!chatWarming) warmChat()
+            speech.announce(
+                genieChat.failure?.let { "Companion unavailable. $it" }
+                    ?: "Companion is still loading, one moment.",
+                interrupt = true,
+            )
+            return
+        }
+        val v = voice ?: VoiceInput(
+            this,
+            onTranscript = ::onTranscript,
+            onNoSpeech = {
+                onListenDone()
+                speech.announce("Didn't catch that.")
+            },
+            onError = { msg ->
+                onListenDone()
+                speech.announce(msg)
+            },
+        ).also { voice = it }
+        if (!v.supported) {
+            speech.announce(
+                "On-device speech recognition is not available on this phone.",
+                interrupt = true,
+            )
+            return
+        }
+        talkHeld = true
+        // The friend stops mid-sentence to listen; drop any half-made reply
+        genieChat.requestStop(null)
+        speech.stopAll()
+        binding.talkButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        binding.talkButton.text = getString(R.string.talk_listening)
+        v.start()
+    }
+
+    private fun stopTalking() {
+        if (!talkHeld) return
+        talkHeld = false
+        if (voice?.listening == true) {
+            binding.talkButton.text = getString(R.string.talk_thinking)
+            voice?.stop()
+        } else {
+            resetTalkButton()
+        }
+    }
+
+    private fun onTranscript(text: String) {
+        binding.talkButton.text = getString(R.string.talk_thinking)
+        lifecycleScope.launch(Dispatchers.IO) {
+            // If a barged-in reply is still winding down after stopStream,
+            // give it a moment before starting the next turn
+            var waited = 0
+            while (genieChat.busy && waited < 2000) {
+                delay(50)
+                waited += 50
+            }
+            val digest = blackboard.digest(SystemClock.elapsedRealtime())
+            val reply = genieChat.ask(text, digest) { sentence -> speech.announceChat(sentence) }
+            withContext(Dispatchers.Main) {
+                resetTalkButton()
+                if (reply == null) speech.announce("Sorry, I lost my train of thought.")
+            }
+        }
+    }
+
+    private fun onListenDone() {
+        if (!talkHeld) resetTalkButton()
+    }
+
+    private fun resetTalkButton() {
+        binding.talkButton.text = getString(R.string.talk_button)
+    }
+
+    // ---- Dev: step-0 bake-off ------------------------------------------
+
+    /** Step-0 bake-off: the companion SLM via GenieX on each compute unit. */
     private fun benchLlm() {
         if (benching) return
         benching = true
-        speech.announce("Starting language model benchmark. This downloads about one gigabyte on first run.", interrupt = true)
+        speech.announce(
+            "Starting language model benchmark. This downloads about one gigabyte on first run.",
+            interrupt = true,
+        )
         lifecycleScope.launch {
             val results = try {
                 withContext(Dispatchers.IO) {
@@ -232,7 +382,7 @@ class MainActivity : AppCompatActivity() {
             }
             Log.i("GenieBench", "RESULTS\n$report")
             AlertDialog.Builder(this@MainActivity)
-                .setTitle("Qwen3.5-2B on ${GenieBench.MODEL.substringBefore('/')}")
+                .setTitle("${GenieRuntime.MODEL.substringAfterLast('/')} bake-off")
                 .setMessage(report)
                 .setPositiveButton("OK", null)
                 .show()
@@ -248,29 +398,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun describeScene() {
-        val d = describer ?: return
-        val frame = latestFrame ?: run {
-            Toast.makeText(this, R.string.no_frame_yet, Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (describing) return
-        describing = true
-        speech.announce(getString(R.string.describing), interrupt = true)
-
-        lifecycleScope.launch {
-            val text = try {
-                d.describe(frame, latestDetections)
-            } catch (e: Exception) {
-                getString(R.string.describe_failed)
-            }
-            speech.announce(text, interrupt = true)
-            describing = false
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
+        voice?.destroy()
+        genieChat.close()
         speech.shutdown()
         actuator.disconnect()
         analysisExecutor.shutdown()
