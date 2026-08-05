@@ -5,9 +5,11 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -23,6 +25,7 @@ import dev.quad.shepherd.feedback.SpeechFeedback
 import dev.quad.shepherd.guidance.AnnouncementPolicy
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.llm.ClaudeSceneDescriber
+import dev.quad.shepherd.llm.GenieBench
 import dev.quad.shepherd.llm.SceneDescriber
 import dev.quad.shepherd.vision.Detection
 import dev.quad.shepherd.vision.DepthEngine
@@ -53,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var latestDetections: List<Detection> = emptyList()
     @Volatile private var guidanceEnabled = true
     @Volatile private var describing = false
+    @Volatile private var benching = false
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -78,6 +82,11 @@ class MainActivity : AppCompatActivity() {
             binding.describeButton.text = getString(R.string.describe_disabled)
         }
         binding.describeButton.setOnClickListener { describeScene() }
+        // Step-0 SLM bake-off: long-press runs Qwen3.5-2B on NPU/GPU/CPU
+        binding.describeButton.setOnLongClickListener {
+            benchLlm()
+            true
+        }
         binding.audioToggle.isChecked = true
         binding.audioToggle.setOnCheckedChangeListener { _, checked ->
             guidanceEnabled = checked
@@ -156,18 +165,64 @@ class MainActivity : AppCompatActivity() {
 
         runOnUiThread {
             binding.overlay.render(result, guidance)
-            binding.statusText.text = getString(
-                R.string.status_format,
-                providerLabel(),
-                result.latencyMs + result.depthLatencyMs,
-                result.detections.size,
-            )
+            if (!benching) {
+                binding.statusText.text = getString(
+                    R.string.status_format,
+                    providerLabel(),
+                    result.latencyMs + result.depthLatencyMs,
+                    result.detections.size,
+                )
+            }
             if (guidanceEnabled) {
                 haptics.update(guidance)
                 announcer.decide(guidance, now)?.let {
-                    speech.announce(it.text, interrupt = it.interrupt)
+                    speech.announce(it.text, interrupt = it.interrupt, urgent = it.urgent)
                 }
             }
+        }
+    }
+
+    /** Step-0 bake-off: Qwen3.5-2B via GenieX on each compute unit. */
+    private fun benchLlm() {
+        if (benching) return
+        benching = true
+        speech.announce("Starting language model benchmark. This downloads about one gigabyte on first run.", interrupt = true)
+        lifecycleScope.launch {
+            val results = try {
+                withContext(Dispatchers.IO) {
+                    GenieBench.runAll(this@MainActivity) { msg ->
+                        runOnUiThread { binding.statusText.text = msg }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GenieBench", "suite failed", e)
+                listOf(
+                    GenieBench.UnitResult(
+                        "init", false, 0, 0f,
+                        (e.message ?: e.javaClass.simpleName).take(160),
+                    )
+                )
+            }
+
+            val report = results.joinToString("\n") { r ->
+                if (r.ok) "${r.unit}: ${"%.1f".format(r.tokensPerSec)} tok/s, first token ${r.firstTokenMs} ms"
+                else "${r.unit}: FAILED — ${r.note}"
+            }
+            Log.i("GenieBench", "RESULTS\n$report")
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Qwen3.5-2B on ${GenieBench.MODEL.substringBefore('/')}")
+                .setMessage(report)
+                .setPositiveButton("OK", null)
+                .show()
+
+            val best = results.filter { it.ok }.maxByOrNull { it.tokensPerSec }
+            speech.announce(
+                if (best != null)
+                    "Benchmark done. Best backend: ${best.unit}, ${best.tokensPerSec.toInt()} tokens per second."
+                else "Benchmark failed. Details on screen.",
+                interrupt = true,
+            )
+            benching = false
         }
     }
 

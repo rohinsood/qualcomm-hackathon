@@ -39,7 +39,16 @@ android {
     }
 
     packaging {
-        jniLibs { useLegacyPackaging = false }
+        jniLibs {
+            useLegacyPackaging = false
+            // GenieX, its qnn-runtime dep, and onnxruntime-android-qnn all
+            // ship libQnn*.so. Keep one copy — declaration order makes
+            // GenieX's QNN 2.42 win, which ORT then loads as well.
+            pickFirsts += setOf(
+                "lib/arm64-v8a/libQnn*.so",
+                "lib/arm64-v8a/libc++_shared.so",
+            )
+        }
         resources {
             // Apache HTTP jars (transitive deps of the Anthropic SDK) each
             // ship these metadata files; Android forbids duplicates.
@@ -76,14 +85,18 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
 
-    // ONNX Runtime with the Qualcomm QNN Execution Provider.
-    // Bundles libQnnHtp.so and friends, so YOLO runs on the Hexagon NPU (HTP)
-    // of the S25 Ultra's Snapdragon 8 Elite with no NDK build of our own.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.28.0")
 
     // Official Anthropic SDK (Kotlin uses the Java SDK) for the optional
     // cloud scene-description feature.
     implementation("com.anthropic:anthropic-java:2.34.0")
+
+    // GenieX: Qualcomm's on-device GenAI runtime (LLM/VLM on NPU/GPU/CPU).
+    // Ships QNN 2.42 native libs; models pulled on-device (HF/AI Hub).
+    // Declared BEFORE onnxruntime so its newer QNN libs win the jniLibs merge.
+    implementation("com.qualcomm.qti:geniex-android:0.3.16")
+
+    // ONNX Runtime with the Qualcomm QNN Execution Provider (vision models).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
 }

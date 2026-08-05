@@ -27,49 +27,69 @@ class AnnouncementPolicyTest {
     )
 
     @Test
-    fun `danger entry speaks immediately with interrupt`() {
+    fun `danger entry speaks immediately, interrupting, in the urgent register`() {
         val p = AnnouncementPolicy()
         val u = p.decide(guidance(GuidanceEngine.Severity.DANGER), t0)
         assertNotNull(u)
         assertTrue(u!!.interrupt)
+        assertTrue(u.urgent)
         assertTrue(u.text.contains("obstacle"))
-        assertTrue(u.text.contains("stop"))
+        assertTrue(u.text.contains("Stop"))
     }
 
     @Test
-    fun `unchanged danger frames stay silent until the repeat interval`() {
+    fun `walking jitter cannot re-trigger speech - the stutter scenario`() {
         val p = AnnouncementPolicy()
         p.decide(guidance(GuidanceEngine.Severity.DANGER), t0)
 
-        // Frame-rate repeats with tiny distance jitter -> silence
-        // (this exact pattern caused the "obs- obs- obs-" stutter)
+        // Frame-rate danger frames with distance jitter -> total silence
+        // (danger text carries no distance, so nothing changes)
         assertNull(p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 1.02f), t0 + 100))
         assertNull(p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 0.98f), t0 + 300))
-        assertNull(p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 1.04f), t0 + 900))
+        assertNull(p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 1.4f), t0 + 900))
 
-        // After the repeat interval it speaks again, without interrupting
+        // The periodic repeat never interrupts
         val repeat = p.decide(guidance(GuidanceEngine.Severity.DANGER), t0 + 2100)
         assertNotNull(repeat)
         assertFalse(repeat!!.interrupt)
+        assertTrue(repeat.urgent)
     }
 
     @Test
-    fun `changed danger direction interrupts`() {
+    fun `direction change speaks WITHOUT interrupting, and only after the gap`() {
         val p = AnnouncementPolicy()
         p.decide(guidance(GuidanceEngine.Severity.DANGER, steer = -0.5f), t0)
-        val u = p.decide(guidance(GuidanceEngine.Severity.DANGER, steer = 0.5f), t0 + 400)
+
+        // 400 ms later the safest gap flips sides: within the minimum gap -> silence
+        assertNull(p.decide(guidance(GuidanceEngine.Severity.DANGER, steer = 0.5f), t0 + 400))
+
+        // After the gap the new instruction is spoken, queued (not clipping)
+        val u = p.decide(guidance(GuidanceEngine.Severity.DANGER, steer = 0.5f), t0 + 1300)
         assertNotNull(u)
-        assertTrue(u!!.interrupt)
-        assertTrue(u.text.contains("move right"))
+        assertFalse(u!!.interrupt)
+        assertTrue(u.text.contains("Go right"))
     }
 
     @Test
-    fun `caution speaks without interrupting and repeats slowly`() {
+    fun `escalation from caution into danger is the one thing that interrupts`() {
+        val p = AnnouncementPolicy()
+        p.decide(guidance(GuidanceEngine.Severity.CAUTION, dist = 2.5f), t0)
+        // 300 ms later — inside the gap — the threat closes to danger
+        val u = p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 1.2f), t0 + 300)
+        assertNotNull(u)
+        assertTrue(u!!.interrupt)
+        assertTrue(u.urgent)
+    }
+
+    @Test
+    fun `caution informs without urgency and repeats slowly`() {
         val p = AnnouncementPolicy()
         val u = p.decide(guidance(GuidanceEngine.Severity.CAUTION, dist = 2.5f), t0)
         assertNotNull(u)
         assertFalse(u!!.interrupt)
-        assertTrue(u.text.contains("slow down"))
+        assertFalse(u.urgent)
+        assertTrue(u.text.contains("ahead"))
+        assertTrue(u.text.contains("2.5"))
 
         assertNull(p.decide(guidance(GuidanceEngine.Severity.CAUTION, dist = 2.5f), t0 + 2000))
         assertNotNull(p.decide(guidance(GuidanceEngine.Severity.CAUTION, dist = 2.5f), t0 + 3600))
@@ -79,7 +99,6 @@ class AnnouncementPolicyTest {
     fun `held danger without threat details keeps repeating the last instruction`() {
         val p = AnnouncementPolicy()
         p.decide(guidance(GuidanceEngine.Severity.DANGER), t0)
-        // Severity hold frame: danger persists but the frame carries no label
         val u = p.decide(
             guidance(GuidanceEngine.Severity.DANGER, dist = null, label = null),
             t0 + 2100,
@@ -92,12 +111,10 @@ class AnnouncementPolicyTest {
     fun `returning to clear confirms once`() {
         val p = AnnouncementPolicy()
         p.decide(guidance(GuidanceEngine.Severity.DANGER), t0)
-        // Too soon after the last utterance -> wait
         assertNull(p.decide(guidance(GuidanceEngine.Severity.CLEAR, dist = null, label = null), t0 + 500))
         val u = p.decide(guidance(GuidanceEngine.Severity.CLEAR, dist = null, label = null), t0 + 2000)
         assertNotNull(u)
         assertEquals("Path clear.", u!!.text)
-        // And only once
         assertNull(p.decide(guidance(GuidanceEngine.Severity.CLEAR, dist = null, label = null), t0 + 4000))
     }
 
@@ -108,10 +125,10 @@ class AnnouncementPolicyTest {
     }
 
     @Test
-    fun `distance is quantized to half meters in the text`() {
+    fun `caution distance is quantized to half meters`() {
         val p = AnnouncementPolicy()
-        val u = p.decide(guidance(GuidanceEngine.Severity.DANGER, dist = 1.23f), t0)
+        val u = p.decide(guidance(GuidanceEngine.Severity.CAUTION, dist = 2.3f), t0)
         assertNotNull(u)
-        assertTrue(u!!.text.contains("1 meters") || u.text.contains("1.5 meters"))
+        assertTrue(u!!.text.contains("2.5 meters"))
     }
 }
