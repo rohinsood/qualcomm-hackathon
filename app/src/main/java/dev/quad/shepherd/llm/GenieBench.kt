@@ -3,32 +3,24 @@ package dev.quad.shepherd.llm
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import com.geniex.sdk.GenieXSdk
 import com.geniex.sdk.LlmWrapper
-import com.geniex.sdk.ModelManagerWrapper
 import com.geniex.sdk.bean.ChatMessage
 import com.geniex.sdk.bean.GenerationConfig
-import com.geniex.sdk.bean.HubSource
 import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
-import com.geniex.sdk.bean.ModelPullInput
 
 /**
- * Step-0 bake-off harness for the conversational companion: pulls the
- * candidate SLM (Qwen3.5-2B, Apache-2.0, GGUF Q4_0 — the precision with the
- * best Hexagon NPU support) through GenieX's own downloader, then runs a
- * short generation on each compute unit (NPU / GPU / CPU) and measures
- * first-token latency and decode tokens/sec.
- *
- * This is deliberately throwaway-shaped: phase 1 replaces it with a real
- * conversation wrapper, but the init/pull/create plumbing carries over.
+ * Step-0 bake-off harness: runs a short generation with the companion SLM
+ * on each compute unit (NPU / GPU / CPU) and measures first-token latency
+ * and decode tokens/sec. Verdict on the S25 Ultra: NPU 12.1 tok/s / 186 ms
+ * first token — the winner, and it leaves the Adreno GPU to the vision
+ * models. [GenieChat] is the production wrapper built on that result; this
+ * stays reachable (long-press the status line) for regression checks.
  */
 object GenieBench {
 
     private const val TAG = "GenieBench"
-    const val MODEL = "unsloth/Qwen3.5-2B-GGUF"
-    private const val PRECISION = "Q4_0"
     private val UNITS = listOf("npu", "gpu", "cpu")
 
     data class UnitResult(
@@ -39,65 +31,12 @@ object GenieBench {
         val note: String,
     )
 
-    @Volatile private var initialized = false
-
-    @Volatile private var initError: String? = null
-
-    private fun ensureInit(context: Context) {
-        if (initialized) return
-        synchronized(this) {
-            if (initialized) return
-            // init() loads the runtime AND registers both plugins itself
-            // (by absolute .so path — requires extracted native libs)
-            GenieXSdk.getInstance().init(
-                context.applicationContext,
-                object : GenieXSdk.InitCallback {
-                    override fun onSuccess() {
-                        Log.i(TAG, "GenieX init OK")
-                    }
-                    override fun onFailure(message: String) {
-                        Log.e(TAG, "GenieX init FAILED: $message")
-                        initError = message
-                    }
-                },
-            )
-            initialized = true
-        }
-    }
-
-    /** Downloads the model through GenieX if not already present (~1.2 GB, Wi-Fi). */
-    private suspend fun ensureModel(context: Context, onStatus: (String) -> Unit): Throwable? {
-        ensureInit(context)
-        val present = runCatching { ModelManagerWrapper.list() }
-            .getOrNull()?.any { it.contains(MODEL) } == true
-        if (present) return null
-
-        onStatus("Downloading ${MODEL.substringAfterLast('/')} (~1.2 GB)…")
-        var failure: Throwable? = null
-        try {
-            ModelManagerWrapper.pullFlow(
-                ModelPullInput(
-                    model_name = MODEL,
-                    precision = PRECISION,
-                    hub = HubSource.HUGGINGFACE,
-                )
-            ).collect { event ->
-                when (event) {
-                    is ModelManagerWrapper.PullEvent.Error ->
-                        failure = RuntimeException(event.toString().take(200))
-                    else -> onStatus("Downloading model… (${event.javaClass.simpleName})")
-                }
-            }
-        } catch (e: Exception) {
-            failure = e
-        }
-        return failure
-    }
-
     private suspend fun bench(context: Context, computeUnit: String): UnitResult {
-        ensureInit(context)
+        GenieRuntime.ensureInit(context)?.let {
+            return UnitResult(computeUnit, false, 0, 0f, it.take(160))
+        }
         return try {
-            val paths = runCatching { ModelManagerWrapper.getPaths(MODEL) }.getOrNull()
+            val paths = GenieRuntime.modelPaths()
                 ?: return UnitResult(computeUnit, false, 0, 0f, "model paths missing")
 
             val llm = LlmWrapper.builder()
@@ -121,7 +60,7 @@ object GenieBench {
                         "In one short sentence, greet the pedestrian you are guiding.",
                     )
                 )
-                val templated = llm.applyChatTemplate(chat, null, false).getOrThrow()
+                val templated = llm.applyChatTemplate(chat, null, false, true).getOrThrow()
 
                 var tokens = 0
                 var firstTokenMs = -1L
@@ -159,7 +98,7 @@ object GenieBench {
 
     /** Full suite: ensure model, then bench NPU, GPU, CPU in turn. */
     suspend fun runAll(context: Context, onStatus: (String) -> Unit): List<UnitResult> {
-        ensureModel(context, onStatus)?.let { err ->
+        GenieRuntime.ensureModel(context, onStatus)?.let { err ->
             return listOf(
                 UnitResult("download", false, 0, 0f, (err.message ?: "download failed").take(160))
             )

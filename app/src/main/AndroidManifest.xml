@@ -3,12 +3,18 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Only needed for the optional Claude scene-description feature -->
+    <!-- Push-to-talk conversation. Recognition runs on-device (API 31+
+         on-device recognizer); audio never leaves the phone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Only needed for GenieX's one-time model download -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-feature
         android:name="android.hardware.camera"
         android:required="true" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <application
         android:allowBackup="false"
