@@ -62,6 +62,12 @@ class SpeechFeedback(context: Context) {
             }
         }
         // The neural voice loads ~100 MB of model — do it off the main thread
+        reloadNeural(context)
+    }
+
+    /** (Re)try loading the Kokoro voice, e.g. after KokoroFetcher finishes. */
+    fun reloadNeural(context: Context) {
+        if (neural != null) return
         Thread({
             neural = NeuralTts.tryCreate(context.getExternalFilesDir(null))
         }, "kokoro-init").apply { isDaemon = true }.start()

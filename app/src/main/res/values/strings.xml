@@ -8,7 +8,10 @@
     <string name="audio_toggle">Haptics</string>
     <string name="depth_toggle">Depth</string>
     <string name="talk_button">Hold to talk</string>
-    <string name="talk_button_a11y">Hold to talk to your walking companion, release to send. Safety alerts stay active while you chat.</string>
+    <string name="talk_button_a11y">Hold to talk to your walking companion, release to send. You can also hold the volume down key. Safety guidance stays active while you chat.</string>
     <string name="talk_listening">Listening…</string>
     <string name="talk_thinking">Answering…</string>
+    <string name="notification_channel">Guidance</string>
+    <string name="notification_title">Shepherd is watching the path</string>
+    <string name="notification_text">Camera guidance and the companion stay active.</string>
 </resources>
