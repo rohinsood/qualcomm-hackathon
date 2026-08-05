@@ -70,7 +70,7 @@ class BleCaneActuator : CaneActuator {
         }
         packet[3] = (guidance.steer * 100f).toInt().coerceIn(-100, 100).toByte()
         packet[4] = packet[2]
-        val distCm = ((guidance.nearest?.distanceMeters ?: 50f) * 100f).toInt().coerceIn(0, 65535)
+        val distCm = ((guidance.nearestDistanceMeters ?: 50f) * 100f).toInt().coerceIn(0, 65535)
         packet[5] = (distCm and 0xFF).toByte()
         packet[6] = ((distCm shr 8) and 0xFF).toByte()
         var checksum = 0

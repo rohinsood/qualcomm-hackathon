@@ -23,6 +23,7 @@ import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.llm.ClaudeSceneDescriber
 import dev.quad.shepherd.llm.SceneDescriber
 import dev.quad.shepherd.vision.Detection
+import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
 import dev.quad.shepherd.vision.FrameAnalyzer
 import dev.quad.shepherd.vision.FrameResult
@@ -35,6 +36,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val engine = DetectionEngine()
+    private val depthEngine = DepthEngine()
     private val guidanceEngine = GuidanceEngine()
     private lateinit var speech: SpeechFeedback
     private lateinit var haptics: HapticFeedback
@@ -91,15 +93,24 @@ class MainActivity : AppCompatActivity() {
     private fun startEngine() {
         binding.statusText.text = getString(R.string.loading_model)
         lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) { engine.initialize(this@MainActivity) }
+            val ok = withContext(Dispatchers.IO) {
+                val detectionOk = engine.initialize(this@MainActivity)
+                if (detectionOk) depthEngine.initialize(this@MainActivity)
+                detectionOk
+            }
             if (!ok) {
                 binding.statusText.text = getString(R.string.model_missing)
                 speech.announce(getString(R.string.model_missing), urgent = true)
                 return@launch
             }
-            binding.statusText.text = engine.activeProvider
+            binding.statusText.text = providerLabel()
             bindCamera()
         }
+    }
+
+    private fun providerLabel(): String = buildString {
+        append(engine.activeProvider)
+        if (depthEngine.available) append(" +depth(").append(depthEngine.activeProvider).append(")")
     }
 
     private fun bindCamera() {
@@ -114,7 +125,10 @@ class MainActivity : AppCompatActivity() {
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(analysisExecutor, FrameAnalyzer(engine, ::onFrame))
+            analysis.setAnalyzer(
+                analysisExecutor,
+                FrameAnalyzer(engine, depthEngine, ::onFrame),
+            )
 
             provider.unbindAll()
             provider.bindToLifecycle(
@@ -127,15 +141,17 @@ class MainActivity : AppCompatActivity() {
         latestFrame = result.frame
         latestDetections = result.detections
 
-        val guidance = guidanceEngine.update(result.detections, result.frameWidth)
+        val guidance = guidanceEngine.update(
+            result.detections, result.frameWidth, result.columnDistances,
+        )
         actuator.sendGuidance(guidance)
 
         runOnUiThread {
             binding.overlay.render(result, guidance)
             binding.statusText.text = getString(
                 R.string.status_format,
-                engine.activeProvider,
-                result.latencyMs,
+                providerLabel(),
+                result.latencyMs + result.depthLatencyMs,
                 result.detections.size,
             )
             if (guidanceEnabled) {
@@ -178,6 +194,7 @@ class MainActivity : AppCompatActivity() {
         speech.shutdown()
         actuator.disconnect()
         analysisExecutor.shutdown()
+        depthEngine.close()
         engine.close()
     }
 }

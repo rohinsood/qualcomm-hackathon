@@ -3,31 +3,41 @@ package dev.quad.shepherd.guidance
 import dev.quad.shepherd.vision.Detection
 
 /**
- * Shepherd-style gap-seeking, adapted from LiDAR depth columns to
- * detector output: the frame is split into vertical columns, each column
- * accumulates a threat score from the detections overlapping it (closer =
- * quadratically more threatening), and the safest contiguous window
- * determines the steering direction.
+ * Shepherd-style gap-seeking, adapted from LiDAR depth columns to what the
+ * S25 Ultra gives us: the frame is split into vertical columns, each column
+ * accumulates a threat score from two sources — object detections (with
+ * pinhole distances) and the dense depth map's per-column distances (which
+ * cover walls, poles, and anything the detector has no class for) — and the
+ * safest contiguous window determines the steering direction.
  *
  * Pure Kotlin for JVM unit testing.
  */
 class GuidanceEngine(
-    private val numColumns: Int = 9,
+    private val numColumns: Int = NUM_COLUMNS,
     private val dangerDistance: Float = 1.5f,
     private val cautionDistance: Float = 3.0f,
 ) {
+
+    companion object {
+        const val NUM_COLUMNS = 9
+    }
 
     enum class Severity { CLEAR, CAUTION, DANGER }
 
     /**
      * @param steer -1.0 (hard left) .. 0.0 (straight) .. +1.0 (hard right)
+     * @param nearestDistanceMeters distance to the closest threat in the
+     *   walking corridor, whether it came from a detection or from depth
+     * @param nearestLabel spoken label for that threat; "obstacle" when it
+     *   was found by depth alone (no class available)
      * @param message spoken guidance, null when there is nothing new to say
      * @param columnThreat per-column threat, normalized 0..1, for the overlay
      */
     data class Guidance(
         val severity: Severity,
         val steer: Float,
-        val nearest: Detection?,
+        val nearestDistanceMeters: Float?,
+        val nearestLabel: String?,
         val message: String?,
         val columnThreat: FloatArray,
     )
@@ -37,12 +47,25 @@ class GuidanceEngine(
 
     private var lastSteer = 0f
 
-    fun update(detections: List<Detection>, frameWidth: Int): Guidance {
+    /**
+     * @param columnDistances optional per-column obstacle distance in meters
+     *   from the dense depth map; entries <= 0 or > 30 mean "no signal".
+     */
+    fun update(
+        detections: List<Detection>,
+        frameWidth: Int,
+        columnDistances: FloatArray? = null,
+    ): Guidance {
         val threat = FloatArray(numColumns)
         val colWidth = frameWidth.toFloat() / numColumns
 
-        var nearest: Detection? = null
         var nearestDist = Float.MAX_VALUE
+        var nearestLabel: String? = null
+
+        // Central walking corridor: middle 60% of the frame
+        val centerBand = frameWidth * 0.6f
+        val bandLo = (frameWidth - centerBand) / 2f
+        val bandHi = bandLo + centerBand
 
         for (d in detections) {
             val dist = d.distanceMeters ?: defaultDistance
@@ -51,19 +74,30 @@ class GuidanceEngine(
             val last = (d.x2 / colWidth).toInt().coerceIn(0, numColumns - 1)
             for (c in first..last) threat[c] += weight
 
-            // Track the nearest obstacle in the central corridor (the walking path)
-            val centerBand = frameWidth * 0.5f
-            val bandLo = (frameWidth - centerBand) / 2f
-            val bandHi = bandLo + centerBand
             if (d.centerX in bandLo..bandHi && dist < nearestDist) {
                 nearestDist = dist
-                nearest = d
+                nearestLabel = d.label
+            }
+        }
+
+        // Dense depth: class-free proximity per column
+        if (columnDistances != null && columnDistances.size == numColumns) {
+            val loCol = (numColumns * 0.2f).toInt()
+            val hiCol = numColumns - 1 - loCol
+            for (c in 0 until numColumns) {
+                val dz = columnDistances[c]
+                if (dz <= 0f || dz > 30f) continue
+                threat[c] += 1.2f / (dz * dz).coerceAtLeast(0.04f)
+                if (c in loCol..hiCol && dz < nearestDist) {
+                    nearestDist = dz
+                    nearestLabel = "obstacle"
+                }
             }
         }
 
         val severity = when {
-            nearest != null && nearestDist < dangerDistance -> Severity.DANGER
-            nearest != null && nearestDist < cautionDistance -> Severity.CAUTION
+            nearestLabel != null && nearestDist < dangerDistance -> Severity.DANGER
+            nearestLabel != null && nearestDist < cautionDistance -> Severity.CAUTION
             else -> Severity.CLEAR
         }
 
@@ -82,12 +116,19 @@ class GuidanceEngine(
             lastSteer
         }
 
-        val message = buildMessage(severity, steer, nearest, nearestDist)
+        val message = buildMessage(severity, steer, nearestLabel, nearestDist)
 
         val maxThreat = threat.maxOrNull()?.takeIf { it > 0f } ?: 1f
         val normalized = FloatArray(numColumns) { threat[it] / maxThreat }
 
-        return Guidance(severity, steer, nearest, message, normalized)
+        return Guidance(
+            severity = severity,
+            steer = steer,
+            nearestDistanceMeters = if (nearestLabel != null) nearestDist else null,
+            nearestLabel = nearestLabel,
+            message = message,
+            columnThreat = normalized,
+        )
     }
 
     /** Slide a 3-column window; steer toward the center of the least-threatening one. */
@@ -114,10 +155,10 @@ class GuidanceEngine(
     private fun buildMessage(
         severity: Severity,
         steer: Float,
-        nearest: Detection?,
+        label: String?,
         nearestDist: Float,
     ): String? {
-        if (severity == Severity.CLEAR || nearest == null) return null
+        if (severity == Severity.CLEAR || label == null) return null
         val direction = when {
             steer < -0.2f -> "move left"
             steer > 0.2f -> "move right"
@@ -126,6 +167,6 @@ class GuidanceEngine(
         }
         val dist = if (nearestDist < 3f) String.format("%.1f", nearestDist)
         else String.format("%.0f", nearestDist)
-        return "${nearest.label}, $dist meters ahead. Please $direction."
+        return "$label, $dist meters ahead. Please $direction."
     }
 }

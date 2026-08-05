@@ -7,34 +7,47 @@ import android.graphics.Paint
 import android.os.SystemClock
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import dev.quad.shepherd.guidance.DepthCalibrator
 import dev.quad.shepherd.guidance.DistanceEstimator
+import dev.quad.shepherd.guidance.GuidanceEngine
 import java.nio.FloatBuffer
 
 /** One processed camera frame: detections in camera-frame pixel space. */
 data class FrameResult(
     val detections: List<Detection>,
+    /**
+     * Per-guidance-column obstacle distance in meters from the dense depth
+     * map (entries <= 0 mean no signal); null when no depth model is loaded.
+     */
+    val columnDistances: FloatArray?,
     val frameWidth: Int,
     val frameHeight: Int,
     val latencyMs: Long,
+    val depthLatencyMs: Long,
     /** The upright camera frame — reused for LLM scene description. */
     val frame: Bitmap,
 )
 
 /**
  * CameraX analyzer: YUV frame -> upright bitmap -> 640x640 letterbox ->
- * CHW float tensor -> [DetectionEngine] -> detections remapped to frame
- * coordinates, with a distance estimate attached per detection.
+ * [DetectionEngine] (+ optional [DepthEngine] on the same letterbox) ->
+ * detections remapped to frame coordinates with distance estimates, plus
+ * per-column depth distances for the guidance engine.
+ *
+ * Depth-to-meters calibration happens here: every untruncated detection
+ * with a pinhole distance contributes a (disparity, meters) reference pair.
  *
  * Runs on the single analysis executor; with STRATEGY_KEEP_ONLY_LATEST the
- * camera naturally drops frames while inference is busy, so effective FPS
- * self-throttles to what the NPU sustains.
+ * camera drops frames while inference is busy, so FPS self-throttles.
  */
 class FrameAnalyzer(
     private val engine: DetectionEngine,
+    private val depthEngine: DepthEngine?,
     private val onResult: (FrameResult) -> Unit,
 ) : ImageAnalysis.Analyzer {
 
     private val size = DetectionEngine.INPUT_SIZE
+    private val calibrator = DepthCalibrator()
     private val inputBuffer: FloatBuffer = FloatBuffer.allocate(3 * size * size)
     private val pixels = IntArray(size * size)
     private val letterboxBitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -69,22 +82,59 @@ class FrameAnalyzer(
 
         val t0 = SystemClock.elapsedRealtime()
         val modelSpace = engine.detect(inputBuffer)
-        val latency = SystemClock.elapsedRealtime() - t0
+        val detectLatency = SystemClock.elapsedRealtime() - t0
 
-        // Map 640-space boxes back into camera-frame space and attach distances
+        // Dense depth on the same letterboxed frame (skipped without a model)
+        val depth = depthEngine?.takeIf { it.available }?.analyze(letterboxBitmap)
+
+        // Calibration: untruncated detections with a pinhole distance give
+        // (disparity, meters) reference pairs anchoring the depth scale
+        if (depth != null) {
+            val toDepth = depth.size.toFloat() / size
+            for (d in modelSpace) {
+                val est = DistanceEstimator.estimate(d.label, d.height) ?: continue
+                if (d.y1 < 8f || d.y2 > size - 8f) continue
+                depth.boxMedian(
+                    d.x1 * toDepth, d.y1 * toDepth,
+                    d.x2 * toDepth, d.y2 * toDepth,
+                )?.let { calibrator.addSample(it, est) }
+            }
+        }
+
+        val columnDistances = depth?.let { dm ->
+            val near = dm.columnNearField(GuidanceEngine.NUM_COLUMNS)
+            FloatArray(near.size) { c -> calibrator.convert(near[c], dm.sceneMedian) ?: 0f }
+        }
+
+        // Map 640-space boxes back into camera-frame space; attach distances
+        // (pinhole estimate + close-range corrections)
+        val sizeF = size.toFloat()
         val detections = modelSpace.map { d ->
             val x1 = ((d.x1 - padX) / scale).coerceIn(0f, upright.width.toFloat())
             val y1 = ((d.y1 - padY) / scale).coerceIn(0f, upright.height.toFloat())
             val x2 = ((d.x2 - padX) / scale).coerceIn(0f, upright.width.toFloat())
             val y2 = ((d.y2 - padY) / scale).coerceIn(0f, upright.height.toFloat())
-            d.copy(
-                x1 = x1, y1 = y1, x2 = x2, y2 = y2,
-                // Distance is estimated in model space, where the focal constant is calibrated
-                distanceMeters = DistanceEstimator.estimate(d.label, d.height),
+            val areaFraction = (d.width * d.height) / (sizeF * sizeF)
+            val dist = DistanceEstimator.applyCloseness(
+                estimate = DistanceEstimator.estimate(d.label, d.height),
+                areaFraction = areaFraction,
+                touchesTop = d.y1 < 6f,
+                touchesBottom = d.y2 > sizeF - 6f,
             )
+            d.copy(x1 = x1, y1 = y1, x2 = x2, y2 = y2, distanceMeters = dist)
         }
 
-        onResult(FrameResult(detections, upright.width, upright.height, latency, upright))
+        onResult(
+            FrameResult(
+                detections = detections,
+                columnDistances = columnDistances,
+                frameWidth = upright.width,
+                frameHeight = upright.height,
+                latencyMs = detectLatency,
+                depthLatencyMs = depth?.latencyMs ?: 0L,
+                frame = upright,
+            )
+        )
     }
 
     /** ARGB bitmap -> CHW float tensor, RGB in 0..1. */

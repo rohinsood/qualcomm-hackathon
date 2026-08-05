@@ -19,7 +19,7 @@ class HapticFeedback(context: Context) {
     private var lastPulseAt = 0L
 
     fun update(guidance: GuidanceEngine.Guidance) {
-        val distance = guidance.nearest?.distanceMeters ?: return
+        val distance = guidance.nearestDistanceMeters ?: return
         if (guidance.severity == GuidanceEngine.Severity.CLEAR) return
 
         val now = SystemClock.elapsedRealtime()

@@ -4,10 +4,10 @@ package dev.quad.shepherd.guidance
  * Monocular distance estimation from bounding-box height via the pinhole
  * model: distance = realHeight * focalPx / boxHeightPx.
  *
- * The S25 Ultra has no LiDAR (unlike the iPhone Shepherd targets), so v1
- * uses known real-world object heights. Phase 2 replaces this with a depth
- * model (Depth-Anything-V2 from AI Hub, converted via QUAD) for per-pixel
- * distance on arbitrary obstacles.
+ * The S25 Ultra has no LiDAR (unlike the iPhone Shepherd targets), so
+ * class-height priors provide metric anchors; the dense depth model
+ * ([dev.quad.shepherd.vision.DepthEngine]) covers everything else and is
+ * calibrated against these estimates.
  *
  * Pure Kotlin for JVM unit testing.
  */
@@ -52,5 +52,26 @@ object DistanceEstimator {
         if (boxHeightPx <= 1f) return null
         val realHeight = CLASS_HEIGHTS[label] ?: return null
         return (realHeight * FOCAL_PX / boxHeightPx).coerceIn(0.1f, 50f)
+    }
+
+    /**
+     * Close-range corrections applied after the pinhole estimate.
+     *
+     * A box cut off by both frame edges means the object is closer than its
+     * box height implies (the pinhole math *over*-estimates truncated
+     * objects, exactly when they are most dangerous). A frame-filling box
+     * means "very close" whatever the class; a large unknown-class box gets
+     * a conservative estimate instead of none at all.
+     */
+    fun applyCloseness(
+        estimate: Float?,
+        areaFraction: Float,
+        touchesTop: Boolean,
+        touchesBottom: Boolean,
+    ): Float? = when {
+        touchesTop && touchesBottom -> minOf(estimate ?: 1.0f, 1.0f)
+        areaFraction > 0.45f -> minOf(estimate ?: 1.1f, 1.1f)
+        estimate == null && areaFraction > 0.22f -> 2.2f
+        else -> estimate
     }
 }
