@@ -25,6 +25,7 @@ class GuidanceEngineTest {
         assertEquals(GuidanceEngine.Severity.CLEAR, g.severity)
         assertEquals(0f, g.steer, 0.001f)
         assertNull(g.message)
+        assertNull(g.nearestDistanceMeters)
     }
 
     @Test
@@ -66,6 +67,48 @@ class GuidanceEngineTest {
             frameWidth,
         )
         assertEquals(GuidanceEngine.Severity.CLEAR, g.severity)
+    }
+
+    @Test
+    fun `depth-only wall ahead triggers danger without any detections`() {
+        // The detector sees nothing (a blank wall has no COCO class), but
+        // the depth map says the central column is 1 m away
+        val cols = FloatArray(GuidanceEngine.NUM_COLUMNS)
+        cols[GuidanceEngine.NUM_COLUMNS / 2] = 1.0f
+        val g = GuidanceEngine().update(emptyList(), frameWidth, cols)
+        assertEquals(GuidanceEngine.Severity.DANGER, g.severity)
+        assertEquals("obstacle", g.nearestLabel)
+        assertNotNull(g.message)
+        assertTrue(g.message!!.contains("obstacle"))
+        assertTrue(kotlin.math.abs(g.steer) > 0f)
+    }
+
+    @Test
+    fun `far depth columns stay clear`() {
+        val cols = FloatArray(GuidanceEngine.NUM_COLUMNS) { 8f }
+        val g = GuidanceEngine().update(emptyList(), frameWidth, cols)
+        assertEquals(GuidanceEngine.Severity.CLEAR, g.severity)
+    }
+
+    @Test
+    fun `zero depth entries mean no signal, not danger`() {
+        val cols = FloatArray(GuidanceEngine.NUM_COLUMNS)   // all 0 = no signal
+        val g = GuidanceEngine().update(emptyList(), frameWidth, cols)
+        assertEquals(GuidanceEngine.Severity.CLEAR, g.severity)
+    }
+
+    @Test
+    fun `depth beats detection when it is closer`() {
+        val cols = FloatArray(GuidanceEngine.NUM_COLUMNS)
+        cols[GuidanceEngine.NUM_COLUMNS / 2] = 0.8f          // wall at 0.8 m
+        val g = GuidanceEngine().update(
+            listOf(det(x1 = 400f, x2 = 500f, distance = 2.5f)),  // person at 2.5 m
+            frameWidth,
+            cols,
+        )
+        assertEquals(GuidanceEngine.Severity.DANGER, g.severity)
+        assertEquals("obstacle", g.nearestLabel)
+        assertEquals(0.8f, g.nearestDistanceMeters!!, 0.01f)
     }
 
     @Test
