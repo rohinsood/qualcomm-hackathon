@@ -2,7 +2,6 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // Secrets live in local.properties (never committed):
@@ -39,12 +38,21 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs { useLegacyPackaging = false }
+        resources {
+            // Apache HTTP jars (transitive deps of the Anthropic SDK) each
+            // ship these metadata files; Android forbids duplicates.
+            excludes += "META-INF/DEPENDENCIES"
+            excludes += "META-INF/LICENSE*"
+            excludes += "META-INF/NOTICE*"
+            excludes += "META-INF/INDEX.LIST"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildTypes {
