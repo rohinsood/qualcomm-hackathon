@@ -41,15 +41,26 @@ object GenieBench {
 
     @Volatile private var initialized = false
 
+    @Volatile private var initError: String? = null
+
     private fun ensureInit(context: Context) {
         if (initialized) return
         synchronized(this) {
             if (initialized) return
-            GenieXSdk.getInstance().init(context.applicationContext)
-            runCatching { GenieXSdk.getInstance().registerPlugin(GenieXSdk.PLUGIN_ID_LLAMA_CPP) }
-                .onFailure { Log.w(TAG, "register llama_cpp failed: ${it.message}") }
-            runCatching { GenieXSdk.getInstance().registerPlugin(GenieXSdk.PLUGIN_ID_QAIRT) }
-                .onFailure { Log.w(TAG, "register qairt failed: ${it.message}") }
+            // init() loads the runtime AND registers both plugins itself
+            // (by absolute .so path — requires extracted native libs)
+            GenieXSdk.getInstance().init(
+                context.applicationContext,
+                object : GenieXSdk.InitCallback {
+                    override fun onSuccess() {
+                        Log.i(TAG, "GenieX init OK")
+                    }
+                    override fun onFailure(message: String) {
+                        Log.e(TAG, "GenieX init FAILED: $message")
+                        initError = message
+                    }
+                },
+            )
             initialized = true
         }
     }

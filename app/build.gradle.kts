@@ -40,7 +40,11 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = false
+            // GenieX dlopens its plugin .so files by ABSOLUTE PATH from
+            // nativeLibraryDir; with useLegacyPackaging=false the libs stay
+            // inside the APK and that path is empty -> "Invalid plugin".
+            // Legacy packaging extracts them to disk.
+            useLegacyPackaging = true
             // GenieX, its qnn-runtime dep, and onnxruntime-android-qnn all
             // ship libQnn*.so. Keep one copy — declaration order makes
             // GenieX's QNN 2.42 win, which ORT then loads as well.
