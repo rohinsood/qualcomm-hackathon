@@ -8,75 +8,114 @@ import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Neural TTS: Kokoro-82M (int8) through sherpa-onnx, replacing the robotic
- * system voice. Synthesis runs on CPU worker threads — the NPU belongs to
- * the SLM and the GPU to vision, and the CPU is otherwise idle — and audio
- * streams into an AudioTrack chunk-by-chunk as it leaves the vocoder, so
- * speech starts before the sentence is fully synthesized.
+ * Neural TTS through sherpa-onnx, replacing the robotic system voice.
+ * Prefers Supertonic 3 (66M, ~10x faster synthesis — latency matters more
+ * than the last bit of richness on a walking companion) and falls back to
+ * Kokoro-82M when only that is on disk. Synthesis runs on CPU worker
+ * threads — the NPU belongs to the SLM and the GPU to vision.
  *
- * Model files live in `<external-files>/models/kokoro` (pushed over adb,
- * ~250 MB, git-ignored like the vision models). When they are missing,
- * [tryCreate] returns null and [SpeechFeedback] stays on the system engine.
+ * Model files live under `<external-files>/models/{supertonic,kokoro}`
+ * ([VoiceFetcher] self-provisions Supertonic on fresh phones). When
+ * nothing is on disk, [tryCreate] returns null and [SpeechFeedback] stays
+ * on the system engine.
  */
 class NeuralTts private constructor(
     private val tts: OfflineTts,
+    private val speakerId: Int,
+    private val engineName: String,
     sampleRate: Int,
 ) {
 
     companion object {
         private const val TAG = "NeuralTts"
-        private const val DIR_NAME = "models/kokoro"
-
-        /** sid 3 = af_heart — Kokoro v1.0's best-rated English voice. */
-        private const val SPEAKER_ID = 3
 
         private const val NORMAL_SPEED = 1.05f
         private const val URGENT_SPEED = 1.25f
 
-        /** Loads the model (~1-2 s); call off the main thread. */
+        /** sid 3 = af_heart — Kokoro v1.0's best-rated English voice. */
+        private const val KOKORO_SPEAKER = 3
+
+        /** Loads a model (~1-2 s); call off the main thread. */
         fun tryCreate(baseDir: File?): NeuralTts? {
-            val dir = File(baseDir ?: return null, DIR_NAME)
+            baseDir ?: return null
+            supertonic(File(baseDir, "models/supertonic"))?.let { return it }
+            kokoro(File(baseDir, "models/kokoro"))?.let { return it }
+            Log.i(TAG, "no neural voice on disk — staying on system TTS")
+            return null
+        }
+
+        private fun supertonic(dir: File): NeuralTts? {
+            val files = listOf(
+                "duration_predictor.int8.onnx", "text_encoder.int8.onnx",
+                "vector_estimator.int8.onnx", "vocoder.int8.onnx",
+                "tts.json", "unicode_indexer.bin", "voice.bin",
+            ).map { File(dir, it) }
+            if (files.any { !it.isFile }) return null
+            return build("supertonic", speaker = 0) {
+                OfflineTtsModelConfig(
+                    supertonic = OfflineTtsSupertonicModelConfig(
+                        durationPredictor = files[0].absolutePath,
+                        textEncoder = files[1].absolutePath,
+                        vectorEstimator = files[2].absolutePath,
+                        vocoder = files[3].absolutePath,
+                        ttsJson = files[4].absolutePath,
+                        unicodeIndexer = files[5].absolutePath,
+                        voiceStyle = files[6].absolutePath,
+                    ),
+                    numThreads = 4,
+                    debug = false,
+                    provider = "cpu",
+                )
+            }
+        }
+
+        private fun kokoro(dir: File): NeuralTts? {
             val model = File(dir, "model.int8.onnx")
             val voices = File(dir, "voices.bin")
             val tokens = File(dir, "tokens.txt")
             val espeak = File(dir, "espeak-ng-data")
             if (!model.isFile || !voices.isFile || !tokens.isFile || !espeak.isDirectory) {
-                Log.i(TAG, "kokoro files missing under $dir — staying on system TTS")
                 return null
             }
-            return try {
-                val lexicon = listOf("lexicon-us-en.txt", "lexicon-zh.txt")
-                    .map { File(dir, it) }
-                    .filter { it.isFile }
-                    .joinToString(",") { it.absolutePath }
-                val dictDir = File(dir, "dict").takeIf { it.isDirectory }?.absolutePath ?: ""
-                val config = OfflineTtsConfig(
-                    model = OfflineTtsModelConfig(
-                        kokoro = OfflineTtsKokoroModelConfig(
-                            model = model.absolutePath,
-                            voices = voices.absolutePath,
-                            tokens = tokens.absolutePath,
-                            dataDir = espeak.absolutePath,
-                            lexicon = lexicon,
-                            dictDir = dictDir,
-                        ),
-                        numThreads = 4,
-                        debug = false,
-                        provider = "cpu",
+            val lexicon = listOf("lexicon-us-en.txt", "lexicon-zh.txt")
+                .map { File(dir, it) }
+                .filter { it.isFile }
+                .joinToString(",") { it.absolutePath }
+            val dictDir = File(dir, "dict").takeIf { it.isDirectory }?.absolutePath ?: ""
+            return build("kokoro", speaker = KOKORO_SPEAKER) {
+                OfflineTtsModelConfig(
+                    kokoro = OfflineTtsKokoroModelConfig(
+                        model = model.absolutePath,
+                        voices = voices.absolutePath,
+                        tokens = tokens.absolutePath,
+                        dataDir = espeak.absolutePath,
+                        lexicon = lexicon,
+                        dictDir = dictDir,
                     ),
+                    numThreads = 4,
+                    debug = false,
+                    provider = "cpu",
                 )
-                val t = OfflineTts(config = config)
-                Log.i(TAG, "kokoro ready: ${t.numSpeakers()} voices @ ${t.sampleRate()} Hz")
-                NeuralTts(t, t.sampleRate())
-            } catch (e: Throwable) {
-                Log.e(TAG, "kokoro init failed", e)
-                null
             }
+        }
+
+        private fun build(
+            name: String,
+            speaker: Int,
+            model: () -> OfflineTtsModelConfig,
+        ): NeuralTts? = try {
+            val t = OfflineTts(config = OfflineTtsConfig(model = model()))
+            Log.i(TAG, "$name ready: ${t.numSpeakers()} voices @ ${t.sampleRate()} Hz")
+            NeuralTts(t, speaker, name, t.sampleRate())
+        } catch (e: Throwable) {
+            Log.e(TAG, "$name init failed", e)
+            null
         }
     }
 
@@ -176,12 +215,10 @@ class NeuralTts private constructor(
                 // path fatally aborts under Kotlin 2.x invokedynamic
                 // lambdas — D8's synthetic class lacks the specialized
                 // invoke([F)Integer method the native side looks up.
-                // Per-sentence synthesis is 0.2-0.5 s at int8; playback
-                // below is sliced so stopAll still cuts in fast.
                 val t0 = System.nanoTime()
-                val audio = tts.generate(item.text, SPEAKER_ID, speed)
+                val audio = tts.generate(item.text, speakerId, speed)
                 val synthMs = (System.nanoTime() - t0) / 1_000_000
-                Log.i(TAG, "synth $synthMs ms, ${audio.samples.size} samples")
+                Log.i(TAG, "$engineName synth $synthMs ms, ${audio.samples.size} samples")
                 if (!closed && gen == generation.get()) {
                     write(audio.samples, gen)
                 }
@@ -207,11 +244,8 @@ class NeuralTts private constructor(
             if (lastResult <= 0) break
             off += lastResult
         }
-        val device = track.routedDevice?.let { "${it.type}/${it.productName}" } ?: "none"
-        Log.i(
-            TAG,
-            "played $off/${samples.size} samples (lastWrite=$lastResult, " +
-                "playState=${track.playState}, device=$device)"
-        )
+        if (lastResult <= 0 && off < samples.size) {
+            Log.w(TAG, "playback stalled at $off/${samples.size} (write=$lastResult)")
+        }
     }
 }

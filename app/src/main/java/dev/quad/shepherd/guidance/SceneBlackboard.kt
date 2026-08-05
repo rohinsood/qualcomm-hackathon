@@ -29,6 +29,9 @@ class SceneBlackboard {
     private var nearestDistance: Float? = null
     private val events = ArrayDeque<Event>()
 
+    /** One-line navigation progress from NavEngine; null when idle. */
+    @Volatile var navSummary: String? = null
+
     @Synchronized
     fun updateFrame(detections: List<Detection>, frameWidth: Int) {
         this.detections = detections
@@ -74,6 +77,8 @@ class SceneBlackboard {
             })
             append('.')
         }
+
+        navSummary?.let { append(' ').append(it).append('.') }
 
         while (events.isNotEmpty() && nowMs - events.first().atMs > EVENT_WINDOW_MS) {
             events.removeFirst()
