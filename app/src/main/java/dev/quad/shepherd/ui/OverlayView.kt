@@ -5,7 +5,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
@@ -13,11 +12,12 @@ import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.vision.FrameResult
 
 /**
- * Draws detection boxes (with label + distance), the per-column threat bar,
- * and a steering arrow over the camera preview. In depth-debug mode the
- * colorized depth map replaces the camera view, with the analysis band and
- * per-column distances rendered on top. Assumes the PreviewView underneath
- * uses fitCenter scaling, and applies the same transform.
+ * Draws detection boxes (with label + distance) and the per-column threat
+ * bar over the camera preview; the steering command itself is rendered by
+ * [SteerView]. In depth-debug mode the colorized depth map replaces the
+ * camera view, with the analysis band and per-column distances rendered on
+ * top. Assumes the PreviewView underneath uses fitCenter scaling, and
+ * applies the same transform.
  */
 class OverlayView @JvmOverloads constructor(
     context: Context,
@@ -41,10 +41,6 @@ class OverlayView @JvmOverloads constructor(
     }
     private val textBgPaint = Paint().apply { color = 0xAA000000.toInt() }
     private val threatPaint = Paint()
-    private val arrowPaint = Paint().apply {
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
     private val bandPaint = Paint().apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
@@ -121,7 +117,6 @@ class OverlayView @JvmOverloads constructor(
         }
 
         drawThreatBar(canvas, g.columnThreat)
-        drawSteerArrow(canvas, g)
     }
 
     private fun drawThreatBar(canvas: Canvas, threat: FloatArray) {
@@ -134,24 +129,5 @@ class OverlayView @JvmOverloads constructor(
             threatPaint.color = Color.argb(180, level, 255 - level, 0)
             canvas.drawRect(i * colWidth, y, (i + 1) * colWidth, (height - bottomInset).toFloat(), threatPaint)
         }
-    }
-
-    private fun drawSteerArrow(canvas: Canvas, g: GuidanceEngine.Guidance) {
-        if (g.severity == GuidanceEngine.Severity.CLEAR) return
-        arrowPaint.color =
-            if (g.severity == GuidanceEngine.Severity.DANGER) Color.RED else Color.YELLOW
-
-        val cx = width / 2f
-        val cy = height - bottomInset - 140f
-        val size = 60f
-        val tip = cx + g.steer * (width / 3f)
-
-        val path = Path().apply {
-            moveTo(tip, cy)                       // arrow tip points toward safe gap
-            lineTo(cx - size / 2f, cy + size)
-            lineTo(cx + size / 2f, cy + size)
-            close()
-        }
-        canvas.drawPath(path, arrowPaint)
     }
 }

@@ -28,7 +28,6 @@ import dev.quad.shepherd.actuator.NoOpActuator
 import dev.quad.shepherd.databinding.ActivityMainBinding
 import dev.quad.shepherd.feedback.HapticFeedback
 import dev.quad.shepherd.feedback.SpeechFeedback
-import dev.quad.shepherd.guidance.AnnouncementPolicy
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.guidance.SceneBlackboard
 import dev.quad.shepherd.llm.GenieBench
@@ -51,7 +50,6 @@ class MainActivity : AppCompatActivity() {
     private val engine = DetectionEngine()
     private val depthEngine = DepthEngine()
     private val guidanceEngine = GuidanceEngine()
-    private val announcer = AnnouncementPolicy()
     private val blackboard = SceneBlackboard()
     private val genieChat = GenieChat()
     private lateinit var speech: SpeechFeedback
@@ -66,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var benching = false
     @Volatile private var chatWarming = false
     private var talkHeld = false
+    private var lastSeverity = GuidanceEngine.Severity.CLEAR
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -103,6 +102,9 @@ class MainActivity : AppCompatActivity() {
             binding.topBar.updatePadding(top = (8 * density).toInt() + bars.top)
             binding.talkButton.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 bottomMargin = (16 * density).toInt() + bars.bottom
+            }
+            binding.steerView.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = (120 * density).toInt() + bars.bottom
             }
             binding.overlay.bottomInset = bars.bottom
             insets
@@ -231,10 +233,25 @@ class MainActivity : AppCompatActivity() {
         )
         blackboard.updateFrame(result.detections, result.frameWidth)
         blackboard.updateGuidance(guidance)
+        // Obstacles are no longer spoken — steering goes to the cane wheel
+        // (visualized by SteerView). Danger onsets are still logged so the
+        // companion can talk about them when asked.
+        if (guidance.severity == GuidanceEngine.Severity.DANGER &&
+            lastSeverity != GuidanceEngine.Severity.DANGER
+        ) {
+            val action = when {
+                guidance.steer < -0.2f -> "steering left"
+                guidance.steer > 0.2f -> "steering right"
+                else -> "stopping"
+            }
+            blackboard.noteAlert("danger: ${guidance.nearestLabel ?: "obstacle"}, $action", now)
+        }
+        lastSeverity = guidance.severity
         actuator.sendGuidance(guidance)
 
         runOnUiThread {
             binding.overlay.render(result, guidance)
+            binding.steerView.render(guidance)
             if (!benching) {
                 binding.statusText.text = getString(
                     R.string.status_format,
@@ -243,30 +260,8 @@ class MainActivity : AppCompatActivity() {
                     result.detections.size,
                 )
             }
-            if (guidanceEnabled) {
-                haptics.update(guidance)
-                announcer.decide(guidance, now)?.let { arbitrate(it, now) }
-            }
+            if (guidanceEnabled) haptics.update(guidance)
         }
-    }
-
-    /**
-     * Final speech arbitration between safety alerts and companion chat:
-     * any danger cuts the companion off mid-sentence (and the model is told
-     * about it), while cautions never talk over the conversation — the
-     * policy re-offers them on its own cadence once the chat goes quiet.
-     */
-    private fun arbitrate(u: AnnouncementPolicy.Utterance, now: Long) {
-        val chatBusy = genieChat.busy || speech.chatActive
-        when {
-            !chatBusy -> speech.announce(u.text, u.interrupt, u.urgent)
-            u.urgent -> {
-                genieChat.requestStop(u.text)
-                speech.announce(u.text, interrupt = true, urgent = true)
-            }
-            else -> return
-        }
-        blackboard.noteAlert(u.text, now)
     }
 
     // ---- Push-to-talk conversation -------------------------------------

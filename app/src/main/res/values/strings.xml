@@ -5,10 +5,10 @@
     <string name="model_missing">Detection model not found. Run scripts/fetch_model.ps1, or push yolov8_det.onnx to the app\'s files/models folder over adb.</string>
     <string name="camera_permission_needed">Camera permission is required for obstacle detection.</string>
     <string name="status_format">%1$s | %2$d ms | %3$d objects</string>
-    <string name="audio_toggle">Audio</string>
+    <string name="audio_toggle">Haptics</string>
     <string name="depth_toggle">Depth</string>
     <string name="talk_button">Hold to talk</string>
     <string name="talk_button_a11y">Hold to talk to your walking companion, release to send. Safety alerts stay active while you chat.</string>
     <string name="talk_listening">Listening…</string>
-    <string name="talk_thinking">Thinking…</string>
+    <string name="talk_thinking">Answering…</string>
 </resources>

@@ -131,6 +131,9 @@ class GenieChat {
                 }
                 append('\n')
                 append(userText.trim())
+                // Qwen3-family soft switch: belt and braces alongside
+                // enableThinking=false in the template call
+                append(" /no_think")
             }
             history.addLast("user" to content)
             userAdded = true

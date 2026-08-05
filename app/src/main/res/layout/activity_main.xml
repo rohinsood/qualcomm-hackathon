@@ -51,6 +51,14 @@
             android:textColor="@android:color/white" />
     </LinearLayout>
 
+    <dev.quad.shepherd.ui.SteerView
+        android:id="@+id/steerView"
+        android:layout_width="190dp"
+        android:layout_height="170dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="120dp"
+        android:importantForAccessibility="no" />
+
     <com.google.android.material.button.MaterialButton
         android:id="@+id/talkButton"
         android:layout_width="match_parent"
