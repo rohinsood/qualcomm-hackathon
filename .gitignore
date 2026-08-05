@@ -11,8 +11,16 @@ captures/
 *.aab
 *.keystore
 
-# Model binaries are fetched per-developer (AI Hub licensing) — never committed
+# Model binaries are usually fetched per-developer (AI Hub / Ultralytics
+# licensing) and not committed. yolov8_det.onnx is the exception: it's
+# checked in so the app runs out of the box without an AI Hub account or
+# a working local export toolchain (see README "Fetch the model").
 app/src/main/assets/*.onnx
+!app/src/main/assets/yolov8_det.onnx
 app/src/main/assets/*.bin
 app/src/main/assets/*.dlc
 scripts/build/
+
+# Raw PyTorch weights are an intermediate of the export step, not needed
+# once yolov8_det.onnx exists
+*.pt

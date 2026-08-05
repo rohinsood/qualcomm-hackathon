@@ -42,14 +42,25 @@ the optional narration touches the network.
 1. **Open in Android Studio** (Ladybug or newer). Gradle sync pulls
    everything, including `onnxruntime-android-qnn` (the QNN/NPU runtime —
    no Qualcomm SDK install needed).
-2. **Fetch the model** (one-time, needs a free
-   [Qualcomm AI Hub](https://aihub.qualcomm.com) account):
-   ```powershell
-   pip install qai-hub "qai-hub-models[yolov8-det]"
-   qai-hub configure --api_token YOUR_TOKEN
-   .\scripts\fetch_model.ps1
+2. **Fetch the model** (one-time). A pre-exported model is already
+   committed at `app/src/main/assets/yolov8_det.onnx`, so this step is only
+   needed to refresh it. On Windows-on-ARM dev machines the AI Hub cloud
+   export chain doesn't install (no ARM64 wheels for `opencv-python`/
+   `torch`, and AI Hub's cloud *compile* step may reject device targets
+   depending on account tier) — export locally instead, e.g. in WSL Ubuntu:
+   ```bash
+   pip install ultralytics
+   python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', imgsz=640, opset=17)"
+   cp yolov8n.onnx /mnt/c/<repo>/app/src/main/assets/yolov8_det.onnx
    ```
-   Or push a model to an installed app without rebuilding:
+   This is a standard ONNX export with no device-specific compile step —
+   `DetectionEngine` compiles it for the Hexagon NPU **on-device, at first
+   run**, via the QNN execution provider, so no cloud compile is required.
+   On x86-64 machines the AI Hub route also works (free account at
+   [aihub.qualcomm.com](https://aihub.qualcomm.com)): `pip install qai-hub
+   "qai-hub-models[yolov8-det]"`, `qai-hub configure --api_token TOKEN`,
+   then `.\scripts\fetch_model.ps1`. Either way you can also push a model
+   to an installed app without rebuilding:
    ```
    adb push yolov8_det.onnx /sdcard/Android/data/dev.quad.shepherd/files/models/
    ```
@@ -96,11 +107,13 @@ the full model lifecycle for this app:
 
 ## Licensing notes
 
-- YOLOv8 weights are **AGPL-3.0** (Ultralytics) and must be exported via
-  your own AI Hub account (not redistributed here — the fetch script exists
-  for this reason). For commercial use pick a permissively-licensed
-  detector from the catalog; the post-processor handles both common output
-  layouts.
+- `app/src/main/assets/yolov8_det.onnx` is Ultralytics' pretrained
+  **YOLOv8n**, exported to plain ONNX — it is **AGPL-3.0**. Fine for this
+  open-source assistive project; for a commercial/closed-source app either
+  license YOLOv8 commercially from Ultralytics or swap in a
+  permissively-licensed detector (e.g. from the AI Hub catalog). The
+  post-processor handles both common output layouts, so swapping models is
+  a drop-in asset replacement.
 - App code: yours to license as you wish.
 
 ## Safety
