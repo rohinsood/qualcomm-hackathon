@@ -12,8 +12,8 @@ import java.nio.FloatBuffer
 /**
  * Runs a YOLO-family object detector via ONNX Runtime, preferring the
  * Qualcomm QNN Execution Provider so inference lands on the Hexagon NPU
- * (HTP) of the Snapdragon 8 Elite. Falls back to CPU if QNN can't load
- * (e.g. non-Qualcomm device, emulator).
+ * (see [OrtSessions] for the tiered NPU/CPU fallback and the S25 Ultra
+ * SoC-config workaround).
  *
  * Model resolution order:
  *  1. `<external-files>/models/yolov8_det.onnx` — push with:
@@ -42,27 +42,10 @@ class DetectionEngine {
             return false
         }
 
-        session = try {
-            val opts = OrtSession.SessionOptions()
-            opts.addQnn(
-                mapOf(
-                    // HTP = the Hexagon Tensor Processor (NPU) backend
-                    "backend_path" to "libQnnHtp.so",
-                    // Lowest latency for a live camera loop
-                    "htp_performance_mode" to "burst",
-                    // Lets fp32 models execute in fp16 on the NPU; ignored for
-                    // pre-quantized (QDQ w8a8) models
-                    "enable_htp_fp16_precision" to "1",
-                )
-            )
-            env.createSession(modelBytes, opts).also { activeProvider = "Hexagon NPU (QNN)" }
-        } catch (e: Exception) {
-            Log.w(TAG, "QNN EP unavailable — falling back to CPU", e)
-            env.createSession(modelBytes, OrtSession.SessionOptions())
-                .also { activeProvider = "CPU" }
-        }
-
-        inputName = session!!.inputNames.first()
+        val created = OrtSessions.create(env, modelBytes, TAG) ?: return false
+        session = created.session
+        activeProvider = created.providerLabel
+        inputName = created.session.inputNames.first()
         Log.i(TAG, "Session ready on $activeProvider, input=$inputName")
         return true
     }

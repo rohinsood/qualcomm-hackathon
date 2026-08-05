@@ -7,8 +7,10 @@ package dev.quad.shepherd.guidance
  * known-height detections, whose pinhole distances are metric.
  *
  * Until enough references have been seen, falls back to a scene-relative
- * heuristic: a column whose near-field disparity towers over the scene
- * median is close, whatever the absolute scale is.
+ * heuristic with two reference levels: the current frame's median, and a
+ * slow-moving temporal baseline. The baseline is what catches a wall that
+ * fills the whole view — in that case the wall IS the current median, so
+ * only the memory of how far the scene was seconds ago reveals it as close.
  *
  * Pure Kotlin for JVM unit testing. Not thread-safe (analysis thread only).
  */
@@ -18,6 +20,7 @@ class DepthCalibrator {
     private val disp = ArrayList<Float>()
     private var a = 0f
     private var b = 0f
+    private var baselineMedian = Float.NaN
 
     var isCalibrated = false
         private set
@@ -31,6 +34,13 @@ class DepthCalibrator {
             disp.removeAt(0)
         }
         refit()
+    }
+
+    /** Call once per depth frame with the scene median disparity. */
+    fun updateBaseline(sceneMedian: Float) {
+        if (!sceneMedian.isFinite()) return
+        baselineMedian = if (baselineMedian.isNaN()) sceneMedian
+        else 0.95f * baselineMedian + 0.05f * sceneMedian
     }
 
     private fun refit() {
@@ -68,11 +78,14 @@ class DepthCalibrator {
 
     /**
      * Uncalibrated fallback: conservative pseudo-distance from how far the
-     * column's near field sticks out above the scene median.
+     * column's near field sticks out above the reference level — the lower
+     * of the current scene median and the temporal baseline.
      */
     fun relativeToMeters(columnDisparity: Float, sceneMedian: Float): Float? {
-        if (sceneMedian <= 1e-4f) return null
-        val ratio = columnDisparity / sceneMedian
+        val ref = if (baselineMedian.isNaN()) sceneMedian
+        else minOf(sceneMedian, baselineMedian)
+        if (ref <= 1e-4f) return null
+        val ratio = columnDisparity / ref
         return when {
             ratio > 2.4f -> 1.0f
             ratio > 1.7f -> 2.4f

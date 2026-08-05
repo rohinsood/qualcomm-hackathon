@@ -46,6 +46,30 @@ class DepthCalibratorTest {
     }
 
     @Test
+    fun `temporal baseline catches a wall that fills the view`() {
+        // Without history, a wall that IS the scene median gives no signal...
+        val fresh = DepthCalibrator()
+        assertNull(fresh.convert(3.0f, 3.0f))
+
+        // ...but with a remembered normal scene, the same reading warns
+        val cal = DepthCalibrator()
+        repeat(30) { cal.updateBaseline(1.0f) }
+        val d = cal.convert(3.0f, 3.0f)
+        assertNotNull(d)
+        assertEquals(1.0f, d!!, 0.01f)
+    }
+
+    @Test
+    fun `baseline drifts toward a persistently changed scene`() {
+        val cal = DepthCalibrator()
+        repeat(30) { cal.updateBaseline(1.0f) }
+        // Scene legitimately becomes nearer overall (e.g. walked indoors);
+        // after enough frames the baseline follows and stops warning
+        repeat(400) { cal.updateBaseline(3.0f) }
+        assertNull(cal.convert(3.0f, 3.0f))
+    }
+
+    @Test
     fun `too few or degenerate samples never calibrate`() {
         val cal = DepthCalibrator()
         cal.addSample(2f, 2f)

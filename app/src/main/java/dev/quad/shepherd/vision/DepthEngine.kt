@@ -3,6 +3,7 @@ package dev.quad.shepherd.vision
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
@@ -20,6 +21,9 @@ import java.nio.FloatBuffer
  * the class-free proximity sense the detector lacks: walls, poles, and
  * furniture register here even though YOLO has no class for them.
  *
+ * The input resolution is read from the model itself, so re-exports at a
+ * different size (see scripts/export_depth_model.sh) are drop-in.
+ *
  * The model file is optional; when absent the app runs detection-only.
  * Not thread-safe. Call from the single analysis thread; the returned map
  * buffer is reused across calls.
@@ -29,7 +33,7 @@ class DepthEngine {
     companion object {
         private const val TAG = "DepthEngine"
         const val MODEL_FILE = "depth_anything_v2_small.onnx"
-        const val INPUT_SIZE = 518
+        private const val DEFAULT_INPUT_SIZE = 294
         // ImageNet normalization, as used by the Depth-Anything preprocessor
         private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
         private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
@@ -53,7 +57,7 @@ class DepthEngine {
             val rowLo = (size * 0.25f).toInt()
             val rowHi = (size * 0.70f).toInt()
             val colW = size / numColumns
-            val scratch = FloatArray(((rowHi - rowLo) / 3 + 1) * (colW / 3 + 1))
+            val scratch = FloatArray(((rowHi - rowLo) / 2 + 1) * (colW / 2 + 1))
             val out = FloatArray(numColumns)
             for (c in 0 until numColumns) {
                 val xLo = c * colW
@@ -64,9 +68,9 @@ class DepthEngine {
                     var x = xLo
                     while (x < xHi && n < scratch.size) {
                         scratch[n++] = map[y * size + x]
-                        x += 3
+                        x += 2
                     }
-                    y += 3
+                    y += 2
                 }
                 if (n > 0) {
                     java.util.Arrays.sort(scratch, 0, n)
@@ -92,9 +96,9 @@ class DepthEngine {
                 var x = xa
                 while (x < xb) {
                     vals.add(map[y * size + x])
-                    x += 4
+                    x += 2
                 }
-                y += 4
+                y += 2
             }
             if (vals.isEmpty()) return null
             vals.sort()
@@ -110,10 +114,13 @@ class DepthEngine {
         private set
     val available: Boolean get() = session != null
 
-    private val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
-    private val input: FloatBuffer = FloatBuffer.allocate(3 * INPUT_SIZE * INPUT_SIZE)
-    private var output = FloatArray(INPUT_SIZE * INPUT_SIZE)
-    private val medianScratch = FloatArray(INPUT_SIZE * INPUT_SIZE / 64 + 1)
+    var inputSize: Int = DEFAULT_INPUT_SIZE
+        private set
+
+    private var pixels = IntArray(0)
+    private var input: FloatBuffer = FloatBuffer.allocate(0)
+    private var output = FloatArray(0)
+    private var medianScratch = FloatArray(0)
 
     /** Loads the model if present. Call off the main thread. */
     fun initialize(context: Context): Boolean {
@@ -121,31 +128,22 @@ class DepthEngine {
             Log.i(TAG, "$MODEL_FILE not found, running detection-only")
             return false
         }
-        session = try {
-            val opts = OrtSession.SessionOptions()
-            opts.addQnn(
-                mapOf(
-                    "backend_path" to "libQnnHtp.so",
-                    "htp_performance_mode" to "burst",
-                    "enable_htp_fp16_precision" to "1",
-                )
-            )
-            env.createSession(bytes, opts).also { activeProvider = "NPU" }
-        } catch (e: Exception) {
-            Log.w(TAG, "QNN EP unavailable for depth, trying CPU", e)
-            try {
-                env.createSession(bytes, OrtSession.SessionOptions())
-                    .also { activeProvider = "CPU" }
-            } catch (e2: Exception) {
-                Log.e(TAG, "Depth session creation failed", e2)
-                null
-            }
-        }
-        session?.let {
-            inputName = it.inputNames.first()
-            Log.i(TAG, "Depth session ready on $activeProvider")
-        }
-        return available
+        val created = OrtSessions.create(env, bytes, TAG) ?: return false
+        session = created.session
+        activeProvider = created.providerLabel
+        inputName = created.session.inputNames.first()
+
+        // The input resolution comes from the model (1 x 3 x H x W)
+        val shape = (created.session.inputInfo[inputName]?.info as? TensorInfo)?.shape
+        inputSize = shape?.getOrNull(2)?.toInt()?.takeIf { it in 70..1030 } ?: DEFAULT_INPUT_SIZE
+
+        pixels = IntArray(inputSize * inputSize)
+        input = FloatBuffer.allocate(3 * inputSize * inputSize)
+        output = FloatArray(inputSize * inputSize)
+        medianScratch = FloatArray(inputSize * inputSize / 16 + 1)
+
+        Log.i(TAG, "Depth session ready on $activeProvider, input ${inputSize}x$inputSize")
+        return true
     }
 
     /** @param square any square upright bitmap (e.g. the detector's 640 letterbox). */
@@ -153,11 +151,11 @@ class DepthEngine {
         val s = session ?: return null
         val t0 = SystemClock.elapsedRealtime()
 
-        val scaled = if (square.width == INPUT_SIZE && square.height == INPUT_SIZE) square
-        else Bitmap.createScaledBitmap(square, INPUT_SIZE, INPUT_SIZE, true)
-        scaled.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        val scaled = if (square.width == inputSize && square.height == inputSize) square
+        else Bitmap.createScaledBitmap(square, inputSize, inputSize, true)
+        scaled.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
 
-        val area = INPUT_SIZE * INPUT_SIZE
+        val area = inputSize * inputSize
         val data = input.array()
         for (i in 0 until area) {
             val p = pixels[i]
@@ -167,7 +165,7 @@ class DepthEngine {
         }
         input.rewind()
 
-        val shape = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
+        val shape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
         OnnxTensor.createTensor(env, input, shape).use { tensor ->
             s.run(mapOf(inputName to tensor)).use { result ->
                 var got = false
@@ -190,12 +188,12 @@ class DepthEngine {
         var i = 0
         while (i < output.size && n < medianScratch.size) {
             medianScratch[n++] = output[i]
-            i += 64
+            i += 16
         }
         java.util.Arrays.sort(medianScratch, 0, n)
         val median = medianScratch[n / 2]
 
-        return DepthMap(output, INPUT_SIZE, median, SystemClock.elapsedRealtime() - t0)
+        return DepthMap(output, inputSize, median, SystemClock.elapsedRealtime() - t0)
     }
 
     fun close() {
