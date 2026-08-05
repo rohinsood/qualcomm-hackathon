@@ -6,11 +6,17 @@ import dev.quad.shepherd.vision.Detection
  * Shepherd-style gap-seeking, adapted from LiDAR depth columns to what the
  * S25 Ultra gives us: the frame is split into vertical columns, each column
  * accumulates a threat score from two sources — object detections (with
- * pinhole distances) and the dense depth map's per-column distances (which
- * cover walls, poles, and anything the detector has no class for) — and the
- * safest contiguous window determines the steering direction.
+ * pinhole distances) and the dense metric depth map's per-column distances
+ * (which cover walls, poles, and anything the detector has no class for) —
+ * and the safest contiguous window determines the steering direction.
  *
- * Pure Kotlin for JVM unit testing.
+ * Raw per-frame state flaps (detections flicker, depth updates are gated),
+ * so the outputs are temporally stabilized: severity escalates instantly
+ * but de-escalates only after a hold period, and steering is smoothed with
+ * an EMA rather than jumping frame to frame. What actually gets SPOKEN is
+ * decided downstream by [AnnouncementPolicy].
+ *
+ * Pure Kotlin for JVM unit testing; the caller supplies the clock.
  */
 class GuidanceEngine(
     private val numColumns: Int = NUM_COLUMNS,
@@ -20,17 +26,19 @@ class GuidanceEngine(
 
     companion object {
         const val NUM_COLUMNS = 9
+        private const val DANGER_HOLD_MS = 1000L
+        private const val CAUTION_HOLD_MS = 800L
     }
 
     enum class Severity { CLEAR, CAUTION, DANGER }
 
     /**
-     * @param steer -1.0 (hard left) .. 0.0 (straight) .. +1.0 (hard right)
+     * @param steer -1.0 (hard left) .. 0.0 (straight) .. +1.0 (hard right),
+     *   EMA-smoothed across frames
      * @param nearestDistanceMeters distance to the closest threat in the
      *   walking corridor, whether it came from a detection or from depth
      * @param nearestLabel spoken label for that threat; "obstacle" when it
      *   was found by depth alone (no class available)
-     * @param message spoken guidance, null when there is nothing new to say
      * @param columnThreat per-column threat, normalized 0..1, for the overlay
      */
     data class Guidance(
@@ -38,23 +46,26 @@ class GuidanceEngine(
         val steer: Float,
         val nearestDistanceMeters: Float?,
         val nearestLabel: String?,
-        val message: String?,
         val columnThreat: FloatArray,
     )
 
     /** Distance assumed for detections whose class has no height prior. */
     private val defaultDistance = 4.0f
 
-    private var lastSteer = 0f
+    private var steer = 0f
+    private var lastDangerAt = Long.MIN_VALUE / 2
+    private var lastThreatAt = Long.MIN_VALUE / 2
 
     /**
      * @param columnDistances optional per-column obstacle distance in meters
      *   from the dense depth map; entries <= 0 or > 30 mean "no signal".
+     * @param nowMs monotonic clock for the temporal stabilization.
      */
     fun update(
         detections: List<Detection>,
         frameWidth: Int,
         columnDistances: FloatArray? = null,
+        nowMs: Long = System.currentTimeMillis(),
     ): Guidance {
         val threat = FloatArray(numColumns)
         val colWidth = frameWidth.toFloat() / numColumns
@@ -95,28 +106,29 @@ class GuidanceEngine(
             }
         }
 
-        val severity = when {
+        val rawSeverity = when {
             nearestLabel != null && nearestDist < dangerDistance -> Severity.DANGER
             nearestLabel != null && nearestDist < cautionDistance -> Severity.CAUTION
             else -> Severity.CLEAR
         }
 
-        val steer = if (severity == Severity.CLEAR) {
-            lastSteer = 0f
-            0f
-        } else {
-            val proposed = safestWindowSteer(threat)
-            // Hysteresis so the command doesn't flip-flop on small differences —
-            // but danger always takes the fresh direction immediately.
-            if (severity == Severity.DANGER ||
-                kotlin.math.abs(proposed - lastSteer) > 0.15f
-            ) {
-                lastSteer = proposed
-            }
-            lastSteer
+        // Escalate instantly, de-escalate only after a hold: a single missed
+        // frame must not cancel a danger call-out
+        if (rawSeverity == Severity.DANGER) lastDangerAt = nowMs
+        if (rawSeverity != Severity.CLEAR) lastThreatAt = nowMs
+        val severity = when {
+            rawSeverity == Severity.DANGER -> Severity.DANGER
+            nowMs - lastDangerAt < DANGER_HOLD_MS -> Severity.DANGER
+            rawSeverity == Severity.CAUTION -> Severity.CAUTION
+            nowMs - lastThreatAt < CAUTION_HOLD_MS -> Severity.CAUTION
+            else -> Severity.CLEAR
         }
 
-        val message = buildMessage(severity, steer, nearestLabel, nearestDist)
+        // Steering: EMA toward the safest window; faster tracking in danger
+        val proposed = if (severity == Severity.CLEAR) 0f else safestWindowSteer(threat)
+        val alpha = if (severity == Severity.DANGER) 0.5f else 0.3f
+        steer += alpha * (proposed - steer)
+        if (severity == Severity.CLEAR && kotlin.math.abs(steer) < 0.05f) steer = 0f
 
         val maxThreat = threat.maxOrNull()?.takeIf { it > 0f } ?: 1f
         val normalized = FloatArray(numColumns) { threat[it] / maxThreat }
@@ -126,7 +138,6 @@ class GuidanceEngine(
             steer = steer,
             nearestDistanceMeters = if (nearestLabel != null) nearestDist else null,
             nearestLabel = nearestLabel,
-            message = message,
             columnThreat = normalized,
         )
     }
@@ -150,23 +161,5 @@ class GuidanceEngine(
         val windowCenter = bestStart + window / 2f
         val frameCenter = (numColumns - 1) / 2f
         return ((windowCenter - frameCenter) / frameCenter).coerceIn(-1f, 1f)
-    }
-
-    private fun buildMessage(
-        severity: Severity,
-        steer: Float,
-        label: String?,
-        nearestDist: Float,
-    ): String? {
-        if (severity == Severity.CLEAR || label == null) return null
-        val direction = when {
-            steer < -0.2f -> "move left"
-            steer > 0.2f -> "move right"
-            severity == Severity.DANGER -> "stop"
-            else -> "slow down"
-        }
-        val dist = if (nearestDist < 3f) String.format("%.1f", nearestDist)
-        else String.format("%.0f", nearestDist)
-        return "$label, $dist meters ahead. Please $direction."
     }
 }

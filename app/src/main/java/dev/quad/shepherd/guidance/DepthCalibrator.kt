@@ -1,100 +1,43 @@
 package dev.quad.shepherd.guidance
 
 /**
- * Maps the depth model's relative disparity (higher = closer, unknown
- * per-frame scale and shift) to meters by fitting
- * `disparity = a * (1/distance) + b` against reference points from
- * known-height detections, whose pinhole distances are metric.
+ * Light-touch refinement for the metric depth model's output.
  *
- * Until enough references have been seen, falls back to a scene-relative
- * heuristic with two reference levels: the current frame's median, and a
- * slow-moving temporal baseline. The baseline is what catches a wall that
- * fills the whole view — in that case the wall IS the current median, so
- * only the memory of how far the scene was seconds ago reveals it as close.
+ * The model (Depth-Anything-V2 *metric*, indoor-tuned) already predicts
+ * distance in meters — a wall you are facing reads as its actual distance
+ * with no references needed, which is what makes the standing-still case
+ * work. This class only trims systematic scale bias: whenever a detection
+ * with a known-height pinhole distance is visible, the ratio between the
+ * two estimates nudges a bounded global scale factor.
+ *
+ * (Historical note: the previous relative-depth design fitted a global
+ * disparity-to-meters mapping, which is unsound for models with per-frame
+ * scale — that is why walls used to go unreported.)
  *
  * Pure Kotlin for JVM unit testing. Not thread-safe (analysis thread only).
  */
 class DepthCalibrator {
 
-    private val invZ = ArrayList<Float>()
-    private val disp = ArrayList<Float>()
-    private var a = 0f
-    private var b = 0f
-    private var baselineMedian = Float.NaN
+    private var scale = 1f
+    private var samples = 0
 
-    var isCalibrated = false
-        private set
-
-    fun addSample(disparity: Float, distanceMeters: Float) {
-        if (distanceMeters !in 0.3f..20f || !disparity.isFinite()) return
-        invZ.add(1f / distanceMeters)
-        disp.add(disparity)
-        if (invZ.size > 40) {
-            invZ.removeAt(0)
-            disp.removeAt(0)
-        }
-        refit()
-    }
-
-    /** Call once per depth frame with the scene median disparity. */
-    fun updateBaseline(sceneMedian: Float) {
-        if (!sceneMedian.isFinite()) return
-        baselineMedian = if (baselineMedian.isNaN()) sceneMedian
-        else 0.95f * baselineMedian + 0.05f * sceneMedian
-    }
-
-    private fun refit() {
-        val n = invZ.size
-        if (n < 4) return
-        // Least squares for disp = a * invZ + b
-        var sx = 0f; var sy = 0f; var sxx = 0f; var sxy = 0f
-        for (i in 0 until n) {
-            sx += invZ[i]; sy += disp[i]
-            sxx += invZ[i] * invZ[i]; sxy += invZ[i] * disp[i]
-        }
-        val denom = n * sxx - sx * sx
-        if (denom <= 1e-6f) return
-        val newA = (n * sxy - sx * sy) / denom
-        val newB = (sy - newA * sx) / n
-        // Physically, disparity must increase as things get closer
-        if (newA <= 1e-3f) return
-        if (!isCalibrated) {
-            a = newA; b = newB
-            isCalibrated = true
-        } else {
-            // EMA so one bad reference cannot swing the mapping
-            a = 0.7f * a + 0.3f * newA
-            b = 0.7f * b + 0.3f * newB
-        }
-    }
-
-    /** @return meters, or null when uncalibrated or the reading means "far". */
-    fun toMeters(disparity: Float): Float? {
-        if (!isCalibrated) return null
-        val inv = (disparity - b) / a
-        if (inv < 1f / 40f) return null
-        return (1f / inv).coerceIn(0.15f, 40f)
-    }
+    val currentScale: Float get() = scale
 
     /**
-     * Uncalibrated fallback: conservative pseudo-distance from how far the
-     * column's near field sticks out above the reference level — the lower
-     * of the current scene median and the temporal baseline.
+     * @param modelMeters depth-model reading for an object (meters)
+     * @param referenceMeters trusted pinhole distance for the same object
      */
-    fun relativeToMeters(columnDisparity: Float, sceneMedian: Float): Float? {
-        val ref = if (baselineMedian.isNaN()) sceneMedian
-        else minOf(sceneMedian, baselineMedian)
-        if (ref <= 1e-4f) return null
-        val ratio = columnDisparity / ref
-        return when {
-            ratio > 2.4f -> 1.0f
-            ratio > 1.7f -> 2.4f
-            else -> null
-        }
+    fun addSample(modelMeters: Float, referenceMeters: Float) {
+        if (modelMeters !in 0.2f..25f || referenceMeters !in 0.3f..20f) return
+        val ratio = (referenceMeters / modelMeters).coerceIn(0.4f, 2.5f)
+        scale = if (samples == 0) ratio else 0.9f * scale + 0.1f * ratio
+        scale = scale.coerceIn(0.5f, 2f)
+        samples++
     }
 
-    /** The single entry point: disparity to meters, or null for far / no signal. */
-    fun convert(columnDisparity: Float, sceneMedian: Float): Float? =
-        if (isCalibrated) toMeters(columnDisparity)
-        else relativeToMeters(columnDisparity, sceneMedian)
+    /** @return refined meters, or null when the reading is implausible. */
+    fun convert(modelMeters: Float): Float? {
+        if (!modelMeters.isFinite() || modelMeters <= 0.05f || modelMeters > 35f) return null
+        return (modelMeters * scale).coerceIn(0.15f, 40f)
+    }
 }
