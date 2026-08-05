@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var haptics: HapticFeedback
     private val actuator: CaneActuator = NoOpActuator()
     private var describer: SceneDescriber? = null
+    private var analyzer: FrameAnalyzer? = null
 
     private val analysisExecutor = Executors.newSingleThreadExecutor()
 
@@ -80,6 +81,9 @@ class MainActivity : AppCompatActivity() {
         binding.audioToggle.isChecked = true
         binding.audioToggle.setOnCheckedChangeListener { _, checked ->
             guidanceEnabled = checked
+        }
+        binding.depthToggle.setOnCheckedChangeListener { _, checked ->
+            analyzer?.depthDebugEnabled = checked
         }
 
         actuator.connect()
@@ -128,10 +132,10 @@ class MainActivity : AppCompatActivity() {
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(
-                analysisExecutor,
-                FrameAnalyzer(engine, depthEngine, ::onFrame),
-            )
+            val fa = FrameAnalyzer(engine, depthEngine, ::onFrame)
+            fa.depthDebugEnabled = binding.depthToggle.isChecked
+            analyzer = fa
+            analysis.setAnalyzer(analysisExecutor, fa)
 
             provider.unbindAll()
             provider.bindToLifecycle(

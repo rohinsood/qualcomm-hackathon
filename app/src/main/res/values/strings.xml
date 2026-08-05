@@ -6,6 +6,7 @@
     <string name="camera_permission_needed">Camera permission is required for obstacle detection.</string>
     <string name="status_format">%1$s | %2$d ms | %3$d objects</string>
     <string name="audio_toggle">Audio</string>
+    <string name="depth_toggle">Depth</string>
     <string name="describe_button">Describe scene</string>
     <string name="describe_button_a11y">Describe the scene around me using AI</string>
     <string name="describe_disabled">Describe scene (add claude.apiKey to local.properties)</string>

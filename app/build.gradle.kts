@@ -79,7 +79,7 @@ dependencies {
     // ONNX Runtime with the Qualcomm QNN Execution Provider.
     // Bundles libQnnHtp.so and friends, so YOLO runs on the Hexagon NPU (HTP)
     // of the S25 Ultra's Snapdragon 8 Elite with no NDK build of our own.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.27.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.28.0")
 
     // Official Anthropic SDK (Kotlin uses the Java SDK) for the optional
     // cloud scene-description feature.

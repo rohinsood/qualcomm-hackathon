@@ -35,6 +35,13 @@ class DepthEngine {
         private const val TAG = "DepthEngine"
         const val MODEL_FILE = "depth_anything_v2_small.onnx"
         private const val DEFAULT_INPUT_SIZE = 294
+        /**
+         * Depth analysis band, as fractions of frame height: the top cut
+         * excludes sky/ceiling, the bottom cut keeps the floor right in
+         * front of the user's feet from reading as an "obstacle".
+         */
+        const val CORRIDOR_TOP = 0.25f
+        const val CORRIDOR_BOTTOM = 0.65f
         // ImageNet normalization, as used by the Depth-Anything preprocessor
         private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
         private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
@@ -50,14 +57,13 @@ class DepthEngine {
         val latencyMs: Long,
     ) {
         /**
-         * Near-field depth (~15th percentile, i.e. the close tail) per
-         * vertical column, sampled in the corridor band (25%..70% of frame
-         * height) so the sky and the ground at the user's feet do not
-         * dominate.
+         * Near-field depth (~20th percentile, i.e. the close tail) per
+         * vertical column, sampled in the corridor band so the sky and the
+         * ground at the user's feet do not dominate.
          */
         fun columnNearField(numColumns: Int): FloatArray {
-            val rowLo = (size * 0.25f).toInt()
-            val rowHi = (size * 0.70f).toInt()
+            val rowLo = (size * CORRIDOR_TOP).toInt()
+            val rowHi = (size * CORRIDOR_BOTTOM).toInt()
             val colW = size / numColumns
             val scratch = FloatArray(((rowHi - rowLo) / 2 + 1) * (colW / 2 + 1))
             val out = FloatArray(numColumns)
@@ -76,7 +82,7 @@ class DepthEngine {
                 }
                 if (n > 0) {
                     java.util.Arrays.sort(scratch, 0, n)
-                    out[c] = scratch[(n * 15) / 100]
+                    out[c] = scratch[(n * 20) / 100]
                 }
             }
             return out
