@@ -27,6 +27,9 @@ class OverlayView @JvmOverloads constructor(
     private var result: FrameResult? = null
     private var guidance: GuidanceEngine.Guidance? = null
 
+    /** Height of the system gesture/navigation bar, set from window insets. */
+    var bottomInset: Int = 0
+
     private val boxPaint = Paint().apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
@@ -124,12 +127,12 @@ class OverlayView @JvmOverloads constructor(
     private fun drawThreatBar(canvas: Canvas, threat: FloatArray) {
         if (threat.isEmpty()) return
         val barHeight = 14f
-        val y = height - barHeight
+        val y = height - bottomInset - barHeight
         val colWidth = width.toFloat() / threat.size
         for ((i, t) in threat.withIndex()) {
             val level = (t * 255).toInt().coerceIn(0, 255)
             threatPaint.color = Color.argb(180, level, 255 - level, 0)
-            canvas.drawRect(i * colWidth, y, (i + 1) * colWidth, height.toFloat(), threatPaint)
+            canvas.drawRect(i * colWidth, y, (i + 1) * colWidth, (height - bottomInset).toFloat(), threatPaint)
         }
     }
 
@@ -139,7 +142,7 @@ class OverlayView @JvmOverloads constructor(
             if (g.severity == GuidanceEngine.Severity.DANGER) Color.RED else Color.YELLOW
 
         val cx = width / 2f
-        val cy = height - 140f
+        val cy = height - bottomInset - 140f
         val size = 60f
         val tip = cx + g.steer * (width / 3f)
 

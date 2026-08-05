@@ -16,6 +16,11 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
+import androidx.core.view.updatePadding
+import android.view.ViewGroup
 import androidx.lifecycle.lifecycleScope
 import dev.quad.shepherd.actuator.CaneActuator
 import dev.quad.shepherd.actuator.NoOpActuator
@@ -72,6 +77,19 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // API 35 draws edge-to-edge: keep the camera full-bleed but move the
+        // controls out from under the status bar and gesture/nav bar
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val density = resources.displayMetrics.density
+            binding.topBar.updatePadding(top = (8 * density).toInt() + bars.top)
+            binding.describeButton.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = (16 * density).toInt() + bars.bottom
+            }
+            binding.overlay.bottomInset = bars.bottom
+            insets
+        }
 
         speech = SpeechFeedback(this)
         haptics = HapticFeedback(this)
