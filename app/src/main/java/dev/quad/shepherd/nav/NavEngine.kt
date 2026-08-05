@@ -51,6 +51,18 @@ class NavEngine(
     @Volatile var summary: String? = null
         private set
 
+    /** Route [lat, lng] points for the mini-map; null when not navigating. */
+    @Volatile var routeLatLngs: List<DoubleArray>? = null
+        private set
+
+    /** Destination [lat, lng] for the mini-map. */
+    @Volatile var destLatLng: DoubleArray? = null
+        private set
+
+    /** Latest fix [lat, lng] for the mini-map. */
+    @Volatile var lastLatLng: DoubleArray? = null
+        private set
+
     val active: Boolean get() = tracker != null
 
     private var tracker: RouteTracker? = null
@@ -116,6 +128,8 @@ class NavEngine(
                     }
                 destination = dest
                 tracker = RouteTracker(route)
+                routeLatLngs = route.points
+                destLatLng = doubleArrayOf(dest.lat, dest.lng)
                 declination = GeomagneticField(
                     here.latitude.toFloat(), here.longitude.toFloat(),
                     here.altitude.toFloat(), System.currentTimeMillis(),
@@ -139,12 +153,15 @@ class NavEngine(
         destination = null
         goalSteer = null
         summary = null
+        routeLatLngs = null
+        destLatLng = null
         withNav { stopSensors() }
         if (announce) speak("Navigation stopped.")
     }
 
     private fun onFix(location: Location) {
         lastFix = location
+        lastLatLng = doubleArrayOf(location.latitude, location.longitude)
         val t = tracker ?: return
         // Prefer the compass; fall back to GPS course when moving
         val heading = when {
@@ -180,6 +197,7 @@ class NavEngine(
             try {
                 RoutesClient.walkingRoute(here.latitude, here.longitude, dest)?.let {
                     tracker = RouteTracker(it)
+                    routeLatLngs = it.points
                 } ?: speak("I couldn't find a new route.")
             } finally {
                 busyRouting = false

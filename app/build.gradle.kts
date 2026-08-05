@@ -26,6 +26,7 @@ android {
             "String", "MAPS_API_KEY",
             "\"${localProps.getProperty("maps.apiKey", "")}\""
         )
+        manifestPlaceholders["MAPS_API_KEY"] = localProps.getProperty("maps.apiKey", "")
     }
 
     buildFeatures {
@@ -105,6 +106,9 @@ dependencies {
     // GPS fixes for walking navigation (route following runs locally;
     // only route/geocode requests leave the phone).
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // Route mini-map during navigation (lite mode).
+    implementation("com.google.android.gms:play-services-maps:19.0.0")
 
     // tar.bz2 unpacking for the Kokoro voice package.
     implementation("org.apache.commons:commons-compress:1.27.1")

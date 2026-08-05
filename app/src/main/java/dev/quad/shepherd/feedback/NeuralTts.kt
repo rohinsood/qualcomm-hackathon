@@ -9,6 +9,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
+import dev.quad.shepherd.util.DebugLog
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
@@ -219,6 +220,7 @@ class NeuralTts private constructor(
                 val audio = tts.generate(item.text, speakerId, speed)
                 val synthMs = (System.nanoTime() - t0) / 1_000_000
                 Log.i(TAG, "$engineName synth $synthMs ms, ${audio.samples.size} samples")
+                DebugLog.d("TTS", "$engineName ${synthMs}ms: ${item.text.take(36)}")
                 if (!closed && gen == generation.get()) {
                     write(audio.samples, gen)
                 }

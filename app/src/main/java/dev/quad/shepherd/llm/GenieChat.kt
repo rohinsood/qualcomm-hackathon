@@ -9,6 +9,7 @@ import com.geniex.sdk.bean.GenerationConfig
 import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
+import dev.quad.shepherd.util.DebugLog
 
 /**
  * Phase-1 conversational companion: a persistent Qwen3.5-2B session on the
@@ -190,10 +191,16 @@ class GenieChat {
                 if (rest.length > 1) onSentence(rest)
             }
             val reply = full.toString().trim()
+            val totalMs = SystemClock.elapsedRealtime() - t0
             Log.i(
                 TAG,
-                "reply ${reply.length} chars in ${SystemClock.elapsedRealtime() - t0} ms " +
+                "reply ${reply.length} chars in $totalMs ms " +
                     "(first token $firstTokenMs ms, cancelled=$cancelRequested)",
+            )
+            DebugLog.d(
+                "SLM",
+                "${reply.length}ch first=${firstTokenMs}ms total=${totalMs}ms" +
+                    if (cancelRequested) " (cut)" else "",
             )
             if (reply.isNotEmpty()) history.addLast("assistant" to reply)
             return reply

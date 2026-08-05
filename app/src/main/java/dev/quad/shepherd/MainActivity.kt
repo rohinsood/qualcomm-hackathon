@@ -23,13 +23,23 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
+import android.view.View
 import androidx.lifecycle.lifecycleScope
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.Marker
+import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.PolylineOptions
 import dev.quad.shepherd.databinding.ActivityMainBinding
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.llm.GenieBench
 import dev.quad.shepherd.llm.GenieRuntime
 import dev.quad.shepherd.service.ShepherdService
 import dev.quad.shepherd.speech.VoiceInput
+import dev.quad.shepherd.util.DebugLog
 import dev.quad.shepherd.vision.FrameResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -50,6 +60,9 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var benching = false
     private var talkHeld = false
+    private var googleMap: GoogleMap? = null
+    private var drawnRoute: List<DoubleArray>? = null
+    private var positionMarker: Marker? = null
 
     private val uiListener = object : ShepherdService.UiListener {
         override fun onFrame(result: FrameResult, guidance: GuidanceEngine.Guidance) {
@@ -63,6 +76,7 @@ class MainActivity : AppCompatActivity() {
                         result.detections.size,
                     ) ?: ""
                 }
+                updateNavMap()
             }
         }
     }
@@ -158,6 +172,23 @@ class MainActivity : AppCompatActivity() {
         binding.depthToggle.setOnCheckedChangeListener { _, checked ->
             service?.setDepthDebug(checked)
         }
+        binding.debugToggle.setOnCheckedChangeListener { _, checked ->
+            binding.debugText.visibility = if (checked) View.VISIBLE else View.GONE
+            if (checked) binding.debugText.text = DebugLog.snapshot()
+        }
+        DebugLog.setListener {
+            runOnUiThread {
+                if (!isDestroyed && binding.debugText.visibility == View.VISIBLE) {
+                    binding.debugText.text = DebugLog.snapshot()
+                }
+            }
+        }
+
+        binding.mapView.onCreate(savedInstanceState)
+        binding.mapView.getMapAsync { map ->
+            googleMap = map
+            map.uiSettings.isMapToolbarEnabled = false
+        }
 
         val wanted = mutableListOf<String>()
         if (notGranted(Manifest.permission.CAMERA)) wanted += Manifest.permission.CAMERA
@@ -183,18 +214,35 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        binding.mapView.onStart()
         service?.let {
             it.setUiListener(uiListener)
             it.attachPreview(binding.previewView.surfaceProvider)
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        binding.mapView.onResume()
+    }
+
+    override fun onPause() {
+        binding.mapView.onPause()
+        super.onPause()
+    }
+
     override fun onStop() {
+        binding.mapView.onStop()
         service?.let {
             it.setUiListener(null)
             it.detachPreview()
         }
         super.onStop()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        binding.mapView.onLowMemory()
     }
 
     // ---- Push-to-talk: hold the big button, or hold volume-down --------
@@ -258,6 +306,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onTranscript(text: String) {
+        DebugLog.d("ASR", "\"${text.take(60)}\"")
         binding.talkButton.text = getString(R.string.talk_thinking)
         val s = service ?: run { resetTalkButton(); return }
         s.ask(text) { resetTalkButton() }
@@ -277,6 +326,56 @@ class MainActivity : AppCompatActivity() {
                 service?.speech?.announce(msg)
             },
         ).also { voice = it }
+    }
+
+    /** Route mini-map: visible while navigating, redrawn per route. */
+    private fun updateNavMap() {
+        val nav = service?.nav
+        val route = nav?.routeLatLngs
+        if (route == null) {
+            if (binding.mapView.visibility != View.GONE) {
+                binding.mapView.visibility = View.GONE
+                drawnRoute = null
+                positionMarker = null
+                googleMap?.clear()
+            }
+            return
+        }
+        if (binding.mapView.visibility != View.VISIBLE) {
+            binding.mapView.visibility = View.VISIBLE
+        }
+        val map = googleMap ?: return
+        if (route !== drawnRoute) {
+            drawnRoute = route
+            positionMarker = null
+            map.clear()
+            val poly = PolylineOptions().color(0xFF2196F3.toInt()).width(8f)
+            route.forEach { poly.add(LatLng(it[0], it[1])) }
+            map.addPolyline(poly)
+            nav.destLatLng?.let {
+                map.addMarker(MarkerOptions().position(LatLng(it[0], it[1])))
+            }
+            runCatching {
+                val bounds = LatLngBounds.builder()
+                route.forEach { bounds.include(LatLng(it[0], it[1])) }
+                map.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(), 48))
+            }.onFailure {
+                map.moveCamera(
+                    CameraUpdateFactory.newLatLngZoom(LatLng(route[0][0], route[0][1]), 16f)
+                )
+            }
+        }
+        nav.lastLatLng?.let { pos ->
+            val here = LatLng(pos[0], pos[1])
+            positionMarker?.let { it.position = here } ?: run {
+                positionMarker = map.addMarker(
+                    MarkerOptions()
+                        .position(here)
+                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE))
+                        .anchor(0.5f, 0.5f)
+                )
+            }
+        }
     }
 
     private fun onListenDone() {
@@ -327,6 +426,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        DebugLog.setListener(null)
+        binding.mapView.onDestroy()
         voice?.destroy()
         if (bound) unbindService(connection)
         super.onDestroy()
