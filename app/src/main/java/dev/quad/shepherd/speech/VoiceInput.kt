@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.speech.ModelDownloadListener
 import android.speech.RecognitionListener
 import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
@@ -176,7 +177,36 @@ class VoiceInput(
         if (downloadTriggered) return true
         val r = obtainRecognizer() ?: return false
         return runCatching {
-            r.triggerModelDownload(listenIntent())
+            if (Build.VERSION.SDK_INT >= 34) {
+                // The listener variant actually schedules on some OEM builds
+                // where the fire-and-forget overload is a silent no-op — and
+                // it tells us how the download went.
+                r.triggerModelDownload(
+                    listenIntent(),
+                    context.mainExecutor,
+                    object : ModelDownloadListener {
+                        override fun onProgress(completedPercent: Int) {
+                            Log.i(TAG, "speech model download $completedPercent%")
+                        }
+
+                        override fun onScheduled() {
+                            Log.i(TAG, "speech model download scheduled")
+                        }
+
+                        override fun onSuccess() {
+                            Log.i(TAG, "speech model installed")
+                            onError("Offline speech model installed. Hold to talk is ready.")
+                        }
+
+                        override fun onError(error: Int) {
+                            Log.w(TAG, "speech model download failed: $error")
+                            onError("Speech model download failed, code $error.")
+                        }
+                    },
+                )
+            } else {
+                r.triggerModelDownload(listenIntent())
+            }
             Log.i(TAG, "triggered model download for ${Locale.getDefault().toLanguageTag()}")
             downloadTriggered = true
             true
