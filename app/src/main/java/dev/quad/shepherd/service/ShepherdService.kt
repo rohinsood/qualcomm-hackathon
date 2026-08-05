@@ -62,10 +62,12 @@ class ShepherdService : LifecycleService() {
             "read", "sign", "text", "written", "writing", "label", "menu", "says", "say on",
         )
 
-        /** Spoken navigation commands, handled before the SLM sees them. */
+        /** Spoken navigation commands, handled before the SLM sees them.
+         *  Unanchored: "hey, can you take me to…" must match too. */
         private val NAV_START = Regex(
-            "^(?:please\\s+)?(?:take me to|navigate to|navigate me to|guide me to|" +
-                "walk me to|directions to|go to)\\s+(.{3,80})$",
+            "(?:take me to|navigate to|navigate me to|guide me to|walk me to|" +
+                "bring me to|directions to|how do i get to|i want to go to|" +
+                "let's go to)\\s+(.{3,80})",
             RegexOption.IGNORE_CASE,
         )
         private val NAV_STOP = Regex(
@@ -269,7 +271,9 @@ class ShepherdService : LifecycleService() {
     fun ask(text: String, onDone: (Boolean) -> Unit) {
         // Navigation commands bypass the SLM entirely
         NAV_START.find(text.trim())?.let { m ->
-            val dest = m.groupValues[1].trim().trimEnd('.', '!', '?')
+            val dest = m.groupValues[1].trim()
+                .trimEnd('.', '!', '?', ',')
+                .replace(Regex("\\s+(please|now|thanks|thank you)$", RegexOption.IGNORE_CASE), "")
             if (notGrantedLocation()) {
                 speech.announce("I need location permission for navigation.", interrupt = true)
             } else {
