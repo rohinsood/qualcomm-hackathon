@@ -24,12 +24,14 @@ import dev.quad.shepherd.R
 import dev.quad.shepherd.actuator.CaneActuator
 import dev.quad.shepherd.actuator.NoOpActuator
 import dev.quad.shepherd.feedback.HapticFeedback
-import dev.quad.shepherd.feedback.KokoroFetcher
 import dev.quad.shepherd.feedback.SpeechFeedback
+import dev.quad.shepherd.feedback.VoiceFetcher
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.guidance.SceneBlackboard
+import dev.quad.shepherd.guidance.SteerFusion
 import dev.quad.shepherd.llm.GenieChat
 import dev.quad.shepherd.llm.OcrReader
+import dev.quad.shepherd.nav.NavEngine
 import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
 import dev.quad.shepherd.vision.FrameAnalyzer
@@ -59,6 +61,17 @@ class ShepherdService : LifecycleService() {
         private val OCR_TRIGGERS = listOf(
             "read", "sign", "text", "written", "writing", "label", "menu", "says", "say on",
         )
+
+        /** Spoken navigation commands, handled before the SLM sees them. */
+        private val NAV_START = Regex(
+            "^(?:please\\s+)?(?:take me to|navigate to|navigate me to|guide me to|" +
+                "walk me to|directions to|go to)\\s+(.{3,80})$",
+            RegexOption.IGNORE_CASE,
+        )
+        private val NAV_STOP = Regex(
+            "stop (?:the )?(?:navigation|navigating|guiding|route)|cancel (?:the )?(?:navigation|route)",
+            RegexOption.IGNORE_CASE,
+        )
     }
 
     inner class LocalBinder : Binder() {
@@ -82,6 +95,9 @@ class ShepherdService : LifecycleService() {
     private lateinit var haptics: HapticFeedback
     private val actuator: CaneActuator = NoOpActuator()
     private val ocr = OcrReader()
+    private val navEngine by lazy {
+        NavEngine(this, lifecycleScope) { line -> speech.announce(line, interrupt = false) }
+    }
     private var analyzer: FrameAnalyzer? = null
     private var preview: Preview? = null
     private val analysisExecutor = Executors.newSingleThreadExecutor()
@@ -106,14 +122,10 @@ class ShepherdService : LifecycleService() {
         haptics = HapticFeedback(this)
         actuator.connect()
         createChannel()
-        startForeground(
-            NOTIFICATION_ID,
-            buildNotification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
-        )
+        startForeground(NOTIFICATION_ID, buildNotification(), foregroundTypes())
         (getSystemService(POWER_SERVICE) as PowerManager)
             .addThermalStatusListener(thermalListener)
-        KokoroFetcher.ensureAsync(this, lifecycleScope) {
+        VoiceFetcher.ensureAsync(this, lifecycleScope) {
             speech.reloadNeural(this)
             speech.announce("Neural voice installed.")
         }
@@ -233,9 +245,13 @@ class ShepherdService : LifecycleService() {
             blackboard.noteAlert("danger: ${guidance.nearestLabel ?: "obstacle"}, $action", now)
         }
         lastSeverity = guidance.severity
-        actuator.sendGuidance(guidance)
+        blackboard.navSummary = navEngine.summary
+        // Shepherd-style fusion: the route's goal bias is added scaled by
+        // (1 - obstacle proximity), so avoidance always outranks the map
+        val fused = guidance.copy(steer = SteerFusion.fuse(guidance, navEngine.goalSteer))
+        actuator.sendGuidance(fused)
         if (guidanceEnabled) haptics.update(guidance)
-        uiListener?.onFrame(result.copy(detections = detections), guidance)
+        uiListener?.onFrame(result.copy(detections = detections), fused)
     }
 
     // ---- Conversation ---------------------------------------------------
@@ -251,6 +267,25 @@ class ShepherdService : LifecycleService() {
      * a read request; [onDone] is called on the main thread.
      */
     fun ask(text: String, onDone: (Boolean) -> Unit) {
+        // Navigation commands bypass the SLM entirely
+        NAV_START.find(text.trim())?.let { m ->
+            val dest = m.groupValues[1].trim().trimEnd('.', '!', '?')
+            if (notGrantedLocation()) {
+                speech.announce("I need location permission for navigation.", interrupt = true)
+            } else {
+                // Re-promote with the location FGS type now that we have it,
+                // so route following continues with the screen off
+                startForeground(NOTIFICATION_ID, buildNotification(), foregroundTypes())
+                navEngine.start(dest)
+            }
+            onDone(true)
+            return
+        }
+        if (NAV_STOP.containsMatchIn(text)) {
+            navEngine.stop()
+            onDone(true)
+            return
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             // A barged-in reply may still be winding down after stopStream
             var waited = 0
@@ -302,9 +337,19 @@ class ShepherdService : LifecycleService() {
             .build()
     }
 
+    private fun foregroundTypes(): Int =
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+            (if (notGrantedLocation()) 0 else ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+
+    private fun notGrantedLocation(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+
     override fun onDestroy() {
         (getSystemService(POWER_SERVICE) as PowerManager)
             .removeThermalStatusListener(thermalListener)
+        navEngine.stop(announce = false)
         genieChat.close()
         speech.shutdown()
         ocr.close()

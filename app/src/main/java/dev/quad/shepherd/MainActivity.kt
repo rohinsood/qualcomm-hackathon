@@ -162,6 +162,9 @@ class MainActivity : AppCompatActivity() {
         val wanted = mutableListOf<String>()
         if (notGranted(Manifest.permission.CAMERA)) wanted += Manifest.permission.CAMERA
         if (notGranted(Manifest.permission.RECORD_AUDIO)) wanted += Manifest.permission.RECORD_AUDIO
+        if (notGranted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            wanted += Manifest.permission.ACCESS_FINE_LOCATION
+        }
         if (Build.VERSION.SDK_INT >= 33 && notGranted(Manifest.permission.POST_NOTIFICATIONS)) {
             wanted += Manifest.permission.POST_NOTIFICATIONS
         }

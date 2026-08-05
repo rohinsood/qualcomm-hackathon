@@ -13,48 +13,52 @@ import java.io.File
 import java.net.URL
 
 /**
- * Self-provisioning for the neural voice: when the Kokoro model files are
- * missing (fresh phone — previously they had to be pushed over adb), this
- * downloads the sherpa-onnx release package (~160 MB, unmetered networks
- * only) and unpacks it into the external files dir, then asks
- * [SpeechFeedback] to switch over from the system voice mid-session.
+ * Self-provisioning for the neural voice: when no voice model is on disk
+ * (fresh phone), this downloads sherpa's Supertonic 3 int8 package
+ * (~130 MB, unmetered networks only) and unpacks it into the external
+ * files dir, then asks [SpeechFeedback] to switch over from the system
+ * voice mid-session. Phones that already carry Kokoro keep it unless
+ * Supertonic is added (Supertonic wins when both exist — it synthesizes
+ * roughly 10x faster).
  */
-object KokoroFetcher {
+object VoiceFetcher {
 
-    private const val TAG = "KokoroFetcher"
+    private const val TAG = "VoiceFetcher"
     private const val PACKAGE_URL =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" +
-            "kokoro-int8-multi-lang-v1_0.tar.bz2"
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2"
 
     @Volatile private var running = false
 
-    /** No-op when the model is already on disk or a fetch is in flight. */
+    /** No-op when a voice already exists on disk or a fetch is in flight. */
     fun ensureAsync(context: Context, scope: CoroutineScope, onReady: () -> Unit) {
-        val dir = File(context.getExternalFilesDir(null), "models/kokoro")
-        if (File(dir, "model.int8.onnx").isFile) return
+        val base = context.getExternalFilesDir(null) ?: return
+        val supertonic = File(base, "models/supertonic")
+        if (File(supertonic, "vocoder.int8.onnx").isFile) return
+        if (File(base, "models/kokoro/model.int8.onnx").isFile) return
         if (running) return
         if (!onUnmetered(context)) {
-            Log.i(TAG, "kokoro missing but no unmetered network — will retry next launch")
+            Log.i(TAG, "no voice on disk but no unmetered network — will retry next launch")
             return
         }
         running = true
         scope.launch(Dispatchers.IO) {
             try {
-                Log.i(TAG, "downloading kokoro voice (~160 MB)…")
-                val tmp = File(context.cacheDir, "kokoro.tar.bz2")
+                Log.i(TAG, "downloading Supertonic 3 voice (~130 MB)…")
+                val tmp = File(context.cacheDir, "supertonic.tar.bz2")
                 URL(PACKAGE_URL).openStream().use { input ->
                     tmp.outputStream().use { input.copyTo(it) }
                 }
                 Log.i(TAG, "download done (${tmp.length() / 1_000_000} MB), unpacking…")
-                dir.mkdirs()
+                supertonic.mkdirs()
                 BZip2CompressorInputStream(tmp.inputStream().buffered()).use { bz ->
                     TarArchiveInputStream(bz).use { tar ->
                         var entry = tar.nextEntry
                         while (entry != null) {
-                            // Strip the top-level "kokoro-int8-multi-lang-v1_0/"
+                            // Strip the top-level package directory
                             val rel = entry.name.substringAfter('/', "")
                             if (rel.isNotEmpty() && !rel.contains("..")) {
-                                val out = File(dir, rel)
+                                val out = File(supertonic, rel)
                                 if (entry.isDirectory) {
                                     out.mkdirs()
                                 } else {
@@ -67,10 +71,10 @@ object KokoroFetcher {
                     }
                 }
                 tmp.delete()
-                Log.i(TAG, "kokoro unpacked to $dir")
+                Log.i(TAG, "supertonic unpacked to $supertonic")
                 onReady()
             } catch (e: Exception) {
-                Log.w(TAG, "kokoro fetch failed", e)
+                Log.w(TAG, "voice fetch failed", e)
             } finally {
                 running = false
             }

@@ -1,5 +1,14 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
+}
+
+// local.properties (never committed):
+//   maps.apiKey=AIza...   -> enables walking navigation (Geocoding + Routes API)
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -12,10 +21,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.2.0"
+
+        buildConfigField(
+            "String", "MAPS_API_KEY",
+            "\"${localProps.getProperty("maps.apiKey", "")}\""
+        )
     }
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     packaging {
@@ -86,6 +101,10 @@ dependencies {
     // On-demand sign/menu reading — bundled Latin model, fully offline.
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+
+    // GPS fixes for walking navigation (route following runs locally;
+    // only route/geocode requests leave the phone).
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // tar.bz2 unpacking for the Kokoro voice package.
     implementation("org.apache.commons:commons-compress:1.27.1")

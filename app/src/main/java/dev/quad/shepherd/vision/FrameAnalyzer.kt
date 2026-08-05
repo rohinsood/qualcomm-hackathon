@@ -57,6 +57,13 @@ class FrameAnalyzer(
     companion object {
         /** Minimum interval between depth model runs. */
         private const val DEPTH_INTERVAL_MS = 300L
+
+        /**
+         * Detection duty-cycle cap (~11 fps). Running back-to-back on every
+         * camera frame kept the GPU pinned and thermal-throttled the whole
+         * SoC — guidance needs 10 Hz, not 30.
+         */
+        private const val MIN_FRAME_INTERVAL_MS = 90L
         /** Fixed color ramp range for the debug view (meters). */
         private const val DEBUG_NEAR_M = 0.3f
         private const val DEBUG_FAR_M = 6.0f
@@ -73,11 +80,19 @@ class FrameAnalyzer(
     private val canvas = Canvas(letterboxBitmap)
     private val clearPaint = Paint().apply { color = android.graphics.Color.BLACK }
 
+    private var lastRunAt = 0L
     private var lastDepthAt = 0L
     private var lastColumnDistances: FloatArray? = null
     private var lastDepthDebug: Bitmap? = null
 
     override fun analyze(image: ImageProxy) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (nowMs - lastRunAt < MIN_FRAME_INTERVAL_MS) {
+            image.close()
+            return
+        }
+        lastRunAt = nowMs
+
         val rotation = image.imageInfo.rotationDegrees
         val bitmap = image.toBitmap()
         image.close()
