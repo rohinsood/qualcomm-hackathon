@@ -17,6 +17,17 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Shepherd">
 
+        <!-- Vendor native libraries the QNN backends dlopen. Without these
+             declarations the Android linker blocks them (API 31+ namespace
+             rules): libcdsprpc = FastRPC to the Hexagon DSP/NPU (HTP),
+             libOpenCL = Adreno GPU backend. -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

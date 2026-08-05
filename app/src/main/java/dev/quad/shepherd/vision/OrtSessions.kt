@@ -13,13 +13,17 @@ import android.util.Log
  *    session creation FAIL unless the entire graph compiled for that
  *    accelerator; only those earn the "NPU"/"GPU" labels.
  *
- * 2. On this S25 Ultra the HTP (NPU) device refuses to initialize
- *    (QNN_DEVICE_ERROR_INVALID_CONFIG) even with the SoC spelled out
- *    (soc_model=69 / htp_arch=79, from the AI Hub catalog) — cause still
- *    unknown. The GPU tier exists because QNN's Adreno backend does not
- *    need the failing HTP device config at all.
+ * 2. QNN's accelerator backends dlopen VENDOR libraries (libcdsprpc.so for
+ *    the Hexagon DSP, libOpenCL.so for Adreno) which Android blocks unless
+ *    the manifest declares them via <uses-native-library> — without that,
+ *    HTP fails with QNN_DEVICE_ERROR_INVALID_CONFIG and GPU with
+ *    QNN_COMMON_ERROR_PLATFORM_NOT_SUPPORTED, and everything lands on CPU.
  *
- * Tier order: NPU (full) -> GPU (full) -> NPU/CPU mixed -> CPU.
+ * 3. The SoC is spelled out (soc_model=69 / htp_arch=79, from the AI Hub
+ *    catalog) because QNN's auto-detection of the SM8750-AC "for Galaxy"
+ *    variant is unproven.
+ *
+ * Tier order: NPU (full) -> GPU (full) -> GPU/CPU -> NPU/CPU -> CPU.
  */
 object OrtSessions {
 
@@ -42,6 +46,8 @@ object OrtSessions {
             ?.let { return Created(it, "NPU") }
         attempt(env, modelBytes, GPU_OPTIONS, strict = true, tag, "full-GPU")
             ?.let { return Created(it, "GPU") }
+        attempt(env, modelBytes, GPU_OPTIONS, strict = false, tag, "mixed-GPU")
+            ?.let { return Created(it, "GPU/CPU mixed") }
         attempt(env, modelBytes, HTP_OPTIONS, strict = false, tag, "mixed-NPU")
             ?.let { return Created(it, "NPU/CPU mixed") }
         return try {

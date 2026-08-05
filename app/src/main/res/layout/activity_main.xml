@@ -40,6 +40,14 @@
             android:layout_height="wrap_content"
             android:text="@string/audio_toggle"
             android:textColor="@android:color/white" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/depthToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/depth_toggle"
+            android:textColor="@android:color/white" />
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton
