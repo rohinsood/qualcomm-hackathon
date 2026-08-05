@@ -145,6 +145,11 @@ class MainActivity : AppCompatActivity() {
 
         actuator.connect()
 
+        // Make sure the offline speech model for the current language is on
+        // the phone — downloads in the background when missing (the cause
+        // of recognizer error 13 on a fresh device)
+        ensureVoice().ensureModel()
+
         val wanted = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
@@ -283,18 +288,7 @@ class MainActivity : AppCompatActivity() {
             )
             return
         }
-        val v = voice ?: VoiceInput(
-            this,
-            onTranscript = ::onTranscript,
-            onNoSpeech = {
-                onListenDone()
-                speech.announce("Didn't catch that.")
-            },
-            onError = { msg ->
-                onListenDone()
-                speech.announce(msg)
-            },
-        ).also { voice = it }
+        val v = ensureVoice()
         if (!v.supported) {
             speech.announce(
                 "On-device speech recognition is not available on this phone.",
@@ -339,6 +333,22 @@ class MainActivity : AppCompatActivity() {
                 if (reply == null) speech.announce("Sorry, I lost my train of thought.")
             }
         }
+    }
+
+    private fun ensureVoice(): VoiceInput {
+        voice?.let { return it }
+        return VoiceInput(
+            this,
+            onTranscript = ::onTranscript,
+            onNoSpeech = {
+                onListenDone()
+                speech.announce("Didn't catch that.")
+            },
+            onError = { msg ->
+                onListenDone()
+                speech.announce(msg)
+            },
+        ).also { voice = it }
     }
 
     private fun onListenDone() {
