@@ -18,11 +18,14 @@ data class FrameResult(
     /**
      * Per-guidance-column obstacle distance in meters from the dense depth
      * map (entries <= 0 mean no signal); null when no depth model is loaded.
+     * Depth runs time-gated, so between depth frames this carries the most
+     * recent depth result.
      */
     val columnDistances: FloatArray?,
     val frameWidth: Int,
     val frameHeight: Int,
     val latencyMs: Long,
+    /** Depth model latency for frames where it ran; 0 on gated frames. */
     val depthLatencyMs: Long,
     /** The upright camera frame — reused for LLM scene description. */
     val frame: Bitmap,
@@ -30,21 +33,25 @@ data class FrameResult(
 
 /**
  * CameraX analyzer: YUV frame -> upright bitmap -> 640x640 letterbox ->
- * [DetectionEngine] (+ optional [DepthEngine] on the same letterbox) ->
- * detections remapped to frame coordinates with distance estimates, plus
- * per-column depth distances for the guidance engine.
+ * [DetectionEngine] every frame, [DepthEngine] time-gated (walls do not
+ * move at frame rate; detection guidance must). Detections are remapped to
+ * frame coordinates with distance estimates; the guidance engine receives
+ * per-column depth distances from the freshest depth frame.
  *
  * Depth-to-meters calibration happens here: every untruncated detection
- * with a pinhole distance contributes a (disparity, meters) reference pair.
- *
- * Runs on the single analysis executor; with STRATEGY_KEEP_ONLY_LATEST the
- * camera drops frames while inference is busy, so FPS self-throttles.
+ * with a pinhole distance contributes a (disparity, meters) reference pair,
+ * and unknown-class detections get their distance read *from* the depth map.
  */
 class FrameAnalyzer(
     private val engine: DetectionEngine,
     private val depthEngine: DepthEngine?,
     private val onResult: (FrameResult) -> Unit,
 ) : ImageAnalysis.Analyzer {
+
+    companion object {
+        /** Minimum interval between depth model runs. */
+        private const val DEPTH_INTERVAL_MS = 300L
+    }
 
     private val size = DetectionEngine.INPUT_SIZE
     private val calibrator = DepthCalibrator()
@@ -53,6 +60,9 @@ class FrameAnalyzer(
     private val letterboxBitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     private val canvas = Canvas(letterboxBitmap)
     private val clearPaint = Paint().apply { color = android.graphics.Color.BLACK }
+
+    private var lastDepthAt = 0L
+    private var lastColumnDistances: FloatArray? = null
 
     override fun analyze(image: ImageProxy) {
         val rotation = image.imageInfo.rotationDegrees
@@ -84,8 +94,16 @@ class FrameAnalyzer(
         val modelSpace = engine.detect(inputBuffer)
         val detectLatency = SystemClock.elapsedRealtime() - t0
 
-        // Dense depth on the same letterboxed frame (skipped without a model)
-        val depth = depthEngine?.takeIf { it.available }?.analyze(letterboxBitmap)
+        // Dense depth, time-gated: walls don't move at frame rate
+        val depth = if (
+            depthEngine?.available == true &&
+            SystemClock.elapsedRealtime() - lastDepthAt >= DEPTH_INTERVAL_MS
+        ) {
+            depthEngine.analyze(letterboxBitmap)?.also {
+                lastDepthAt = SystemClock.elapsedRealtime()
+                calibrator.updateBaseline(it.sceneMedian)
+            }
+        } else null
 
         // Calibration: untruncated detections with a pinhole distance give
         // (disparity, meters) reference pairs anchoring the depth scale
@@ -101,13 +119,16 @@ class FrameAnalyzer(
             }
         }
 
-        val columnDistances = depth?.let { dm ->
-            val near = dm.columnNearField(GuidanceEngine.NUM_COLUMNS)
-            FloatArray(near.size) { c -> calibrator.convert(near[c], dm.sceneMedian) ?: 0f }
+        if (depth != null) {
+            val near = depth.columnNearField(GuidanceEngine.NUM_COLUMNS)
+            lastColumnDistances = FloatArray(near.size) { c ->
+                calibrator.convert(near[c], depth.sceneMedian) ?: 0f
+            }
         }
 
         // Map 640-space boxes back into camera-frame space; attach distances
-        // (pinhole estimate + close-range corrections)
+        // (pinhole estimate + close-range corrections + depth-map lookup for
+        // classes without a height prior)
         val sizeF = size.toFloat()
         val detections = modelSpace.map { d ->
             val x1 = ((d.x1 - padX) / scale).coerceIn(0f, upright.width.toFloat())
@@ -115,19 +136,26 @@ class FrameAnalyzer(
             val x2 = ((d.x2 - padX) / scale).coerceIn(0f, upright.width.toFloat())
             val y2 = ((d.y2 - padY) / scale).coerceIn(0f, upright.height.toFloat())
             val areaFraction = (d.width * d.height) / (sizeF * sizeF)
-            val dist = DistanceEstimator.applyCloseness(
+            var dist = DistanceEstimator.applyCloseness(
                 estimate = DistanceEstimator.estimate(d.label, d.height),
                 areaFraction = areaFraction,
                 touchesTop = d.y1 < 6f,
                 touchesBottom = d.y2 > sizeF - 6f,
             )
+            if (dist == null && depth != null) {
+                val toDepth = depth.size.toFloat() / size
+                dist = depth.boxMedian(
+                    d.x1 * toDepth, d.y1 * toDepth,
+                    d.x2 * toDepth, d.y2 * toDepth,
+                )?.let { calibrator.convert(it, depth.sceneMedian) }
+            }
             d.copy(x1 = x1, y1 = y1, x2 = x2, y2 = y2, distanceMeters = dist)
         }
 
         onResult(
             FrameResult(
                 detections = detections,
-                columnDistances = columnDistances,
+                columnDistances = lastColumnDistances,
                 frameWidth = upright.width,
                 frameHeight = upright.height,
                 latencyMs = detectLatency,
