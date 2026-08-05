@@ -126,6 +126,7 @@ class NeuralTts private constructor(
         if (closed) return
         if (interrupt) stopAll()
         if (chat) synchronized(this) { chatPending++ }
+        Log.i(TAG, "enqueue chat=$chat urgent=$urgent interrupt=$interrupt: ${text.take(60)}")
         queue.put(Item(text, urgent, chat, generation.get()))
     }
 
@@ -157,6 +158,7 @@ class NeuralTts private constructor(
 
     private fun loop() {
         runCatching { track.play() }
+            .onFailure { Log.e(TAG, "AudioTrack.play failed (state=${track.state})", it) }
         while (!closed) {
             val item = try {
                 queue.take()
@@ -176,7 +178,10 @@ class NeuralTts private constructor(
                 // invoke([F)Integer method the native side looks up.
                 // Per-sentence synthesis is 0.2-0.5 s at int8; playback
                 // below is sliced so stopAll still cuts in fast.
+                val t0 = System.nanoTime()
                 val audio = tts.generate(item.text, SPEAKER_ID, speed)
+                val synthMs = (System.nanoTime() - t0) / 1_000_000
+                Log.i(TAG, "synth $synthMs ms, ${audio.samples.size} samples")
                 if (!closed && gen == generation.get()) {
                     write(audio.samples, gen)
                 }
@@ -195,11 +200,18 @@ class NeuralTts private constructor(
     /** Blocking sliced playback; a generation bump cancels between slices. */
     private fun write(samples: FloatArray, gen: Long) {
         var off = 0
+        var lastResult = 0
         val slice = 6000 // 0.25 s at 24 kHz
         while (off < samples.size && !closed && gen == generation.get()) {
-            val n = track.write(samples, off, minOf(slice, samples.size - off), AudioTrack.WRITE_BLOCKING)
-            if (n <= 0) break
-            off += n
+            lastResult = track.write(samples, off, minOf(slice, samples.size - off), AudioTrack.WRITE_BLOCKING)
+            if (lastResult <= 0) break
+            off += lastResult
         }
+        val device = track.routedDevice?.let { "${it.type}/${it.productName}" } ?: "none"
+        Log.i(
+            TAG,
+            "played $off/${samples.size} samples (lastWrite=$lastResult, " +
+                "playState=${track.playState}, device=$device)"
+        )
     }
 }

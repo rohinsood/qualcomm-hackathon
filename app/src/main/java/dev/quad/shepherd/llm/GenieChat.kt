@@ -30,8 +30,8 @@ class GenieChat {
         private const val COMPUTE_UNIT = "npu"
         private const val N_CTX = 4096
 
-        /** ~13 s of speech at the NPU's 12 tok/s — a hard cap on rambling. */
-        private const val MAX_REPLY_TOKENS = 160
+        /** ~8 s of speech at the NPU's 12 tok/s — a hard cap on rambling. */
+        private const val MAX_REPLY_TOKENS = 96
 
         /** Verbatim turns kept; older ones simply fall out of the window. */
         private const val MAX_HISTORY_MESSAGES = 8
