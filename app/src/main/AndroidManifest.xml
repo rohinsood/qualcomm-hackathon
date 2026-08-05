@@ -43,6 +43,11 @@
             android:name="libOpenCL.so"
             android:required="false" />
 
+        <!-- Route mini-map (Maps SDK for Android, lite mode) -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
         <service
             android:name=".service.ShepherdService"
             android:exported="false"

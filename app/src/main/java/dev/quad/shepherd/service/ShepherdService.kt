@@ -34,6 +34,7 @@ import dev.quad.shepherd.llm.OcrReader
 import dev.quad.shepherd.nav.NavEngine
 import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
+import dev.quad.shepherd.util.DebugLog
 import dev.quad.shepherd.vision.FrameAnalyzer
 import dev.quad.shepherd.vision.FrameResult
 import dev.quad.shepherd.vision.TrafficLightEye
@@ -98,8 +99,14 @@ class ShepherdService : LifecycleService() {
     private val actuator: CaneActuator = NoOpActuator()
     private val ocr = OcrReader()
     private val navEngine by lazy {
-        NavEngine(this, lifecycleScope) { line -> speech.announce(line, interrupt = false) }
+        NavEngine(this, lifecycleScope) { line ->
+            DebugLog.d("NAV", line)
+            speech.announce(line, interrupt = false)
+        }
     }
+
+    /** Mini-map data source for the activity. */
+    val nav: NavEngine get() = navEngine
     private var analyzer: FrameAnalyzer? = null
     private var preview: Preview? = null
     private val analysisExecutor = Executors.newSingleThreadExecutor()
@@ -115,7 +122,7 @@ class ShepherdService : LifecycleService() {
 
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
         thermalNote = if (status >= PowerManager.THERMAL_STATUS_MODERATE) " · warm" else ""
-        Log.i(TAG, "thermal status -> $status")
+        DebugLog.d("SYS", "thermal -> $status")
     }
 
     override fun onCreate() {
@@ -182,6 +189,7 @@ class ShepherdService : LifecycleService() {
                     append(" +depth(").append(depthEngine.activeProvider).append(")")
                 }
             }
+            DebugLog.d("VIS", visionLabel)
             bindCamera()
             warmChat()
         }
@@ -245,6 +253,7 @@ class ShepherdService : LifecycleService() {
                 else -> "stopping"
             }
             blackboard.noteAlert("danger: ${guidance.nearestLabel ?: "obstacle"}, $action", now)
+            DebugLog.d("GUID", "danger: ${guidance.nearestLabel ?: "obstacle"} → $action")
         }
         lastSeverity = guidance.severity
         blackboard.navSummary = navEngine.summary
@@ -252,7 +261,8 @@ class ShepherdService : LifecycleService() {
         // (1 - obstacle proximity), so avoidance always outranks the map
         val fused = guidance.copy(steer = SteerFusion.fuse(guidance, navEngine.goalSteer))
         actuator.sendGuidance(fused)
-        if (guidanceEnabled) haptics.update(guidance)
+        // Haptics follow the FUSED command so turns are felt, not just seen
+        if (guidanceEnabled) haptics.update(fused)
         uiListener?.onFrame(result.copy(detections = detections), fused)
     }
 
@@ -274,6 +284,7 @@ class ShepherdService : LifecycleService() {
             val dest = m.groupValues[1].trim()
                 .trimEnd('.', '!', '?', ',')
                 .replace(Regex("\\s+(please|now|thanks|thank you)$", RegexOption.IGNORE_CASE), "")
+            DebugLog.d("NAV", "intent: start → \"$dest\"")
             if (notGrantedLocation()) {
                 speech.announce("I need location permission for navigation.", interrupt = true)
             } else {
@@ -286,10 +297,12 @@ class ShepherdService : LifecycleService() {
             return
         }
         if (NAV_STOP.containsMatchIn(text)) {
+            DebugLog.d("NAV", "intent: stop")
             navEngine.stop()
             onDone(true)
             return
         }
+        DebugLog.d("CHAT", "→ SLM: ${text.take(50)}")
         lifecycleScope.launch(Dispatchers.IO) {
             // A barged-in reply may still be winding down after stopStream
             var waited = 0
