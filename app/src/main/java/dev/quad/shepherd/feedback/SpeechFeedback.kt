@@ -21,12 +21,16 @@ class SpeechFeedback(context: Context) {
     private var lastMessage: String? = null
     private var lastSpokenAt = 0L
 
-    private val tts: TextToSpeech = TextToSpeech(context) { status ->
-        ready = status == TextToSpeech.SUCCESS
-        if (ready) {
-            tts.setSpeechRate(1.15f)
-        } else {
-            Log.e(TAG, "TTS init failed: $status")
+    private lateinit var tts: TextToSpeech
+
+    init {
+        tts = TextToSpeech(context) { status ->
+            ready = status == TextToSpeech.SUCCESS
+            if (ready) {
+                tts.setSpeechRate(1.15f)
+            } else {
+                Log.e(TAG, "TTS init failed: $status")
+            }
         }
     }
 
@@ -44,7 +48,9 @@ class SpeechFeedback(context: Context) {
     }
 
     fun shutdown() {
-        tts.stop()
-        tts.shutdown()
+        if (::tts.isInitialized) {
+            tts.stop()
+            tts.shutdown()
+        }
     }
 }
