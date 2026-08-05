@@ -99,6 +99,12 @@ dependencies {
     // Declared BEFORE onnxruntime so its newer QNN libs win the jniLibs merge.
     implementation("com.qualcomm.qti:geniex-android:0.3.16")
 
+    // sherpa-onnx (static-link-onnxruntime build: its ORT is linked INTO
+    // libsherpa-onnx-jni.so, so it cannot clash with the QNN ORT below).
+    // Powers the neural Kokoro TTS voice; model files are pushed to the
+    // phone's external files dir over adb.
+    implementation(files("libs/sherpa-onnx-static-link-onnxruntime-1.13.4.aar"))
+
     // ONNX Runtime with the Qualcomm QNN Execution Provider (vision models).
     implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.28.0")
 

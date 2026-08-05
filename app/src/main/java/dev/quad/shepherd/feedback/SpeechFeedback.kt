@@ -8,12 +8,12 @@ import android.util.Log
 import java.util.Collections
 
 /**
- * Thin TTS executor — one voice, two registers, and two kinds of utterance:
- * guidance alerts (short, may interrupt) and companion chat sentences
- * (queued, conversational). All pacing/interruption decisions live in
- * [dev.quad.shepherd.guidance.AnnouncementPolicy] and MainActivity's
- * arbitration; the one guard kept here is a backstop against restarting an
- * in-flight alert with the exact same text.
+ * Speech front-end — one voice, two registers (normal / urgent), and two
+ * kinds of utterance: system/alert lines (may interrupt) and companion
+ * chat sentences (queued, conversational). Speaks with the neural Kokoro
+ * voice ([NeuralTts]) when its model files are on the phone, falling back
+ * to the Android system engine otherwise. The one guard kept here is a
+ * backstop against restarting an in-flight line with the exact same text.
  */
 class SpeechFeedback(context: Context) {
 
@@ -30,7 +30,9 @@ class SpeechFeedback(context: Context) {
     private var lastAt = 0L
     private var counter = 0L
 
-    /** Chat utterance ids that are speaking or queued (TTS-thread callbacks). */
+    @Volatile private var neural: NeuralTts? = null
+
+    /** Fallback-engine chat utterance ids in flight (TTS-thread callbacks). */
     private val activeChat: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
     private lateinit var tts: TextToSpeech
@@ -59,24 +61,33 @@ class SpeechFeedback(context: Context) {
                 })
             }
         }
+        // The neural voice loads ~100 MB of model — do it off the main thread
+        Thread({
+            neural = NeuralTts.tryCreate(context.getExternalFilesDir(null))
+        }, "kokoro-init").apply { isDaemon = true }.start()
     }
 
     /** True while any companion-chat sentence is speaking or queued. */
-    val chatActive: Boolean get() = activeChat.isNotEmpty()
+    val chatActive: Boolean
+        get() = neural?.chatActive ?: activeChat.isNotEmpty()
 
     /**
-     * Guidance alert.
-     * @param interrupt flush whatever is being spoken (reserved for danger
-     *   escalation and explicit user actions).
-     * @param urgent use the clipped, faster alert register.
+     * System/alert line.
+     * @param interrupt cut off and flush whatever is being spoken.
+     * @param urgent use the clipped, faster register.
      */
     fun announce(text: String, interrupt: Boolean = false, urgent: Boolean = false) {
-        if (!ready) return
         val now = SystemClock.elapsedRealtime()
         if (text == lastText && now - lastAt < SAME_TEXT_GUARD_MS) return
         lastText = text
         lastAt = now
-        if (interrupt) activeChat.clear() // flushed chat also gets onStop; belt and braces
+
+        neural?.let {
+            it.enqueue(text, urgent = urgent, chat = false, interrupt = interrupt)
+            return
+        }
+        if (!ready) return
+        if (interrupt) activeChat.clear()
         tts.setSpeechRate(if (urgent) URGENT_RATE else NORMAL_RATE)
         val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         tts.speak(text, mode, null, "alert-${counter++}")
@@ -84,6 +95,10 @@ class SpeechFeedback(context: Context) {
 
     /** Companion chat sentence: queued, conversational register, no dedup guard. */
     fun announceChat(text: String) {
+        neural?.let {
+            it.enqueue(text, urgent = false, chat = true, interrupt = false)
+            return
+        }
         if (!ready) return
         tts.setSpeechRate(NORMAL_RATE)
         val id = CHAT_PREFIX + counter++
@@ -93,13 +108,16 @@ class SpeechFeedback(context: Context) {
 
     /** Hard stop everything — the friend goes quiet to listen. */
     fun stopAll() {
-        if (!ready) return
-        activeChat.clear()
         lastText = null
-        tts.stop()
+        neural?.stopAll()
+        if (ready) {
+            activeChat.clear()
+            tts.stop()
+        }
     }
 
     fun shutdown() {
+        neural?.close()
         if (::tts.isInitialized) {
             tts.stop()
             tts.shutdown()
