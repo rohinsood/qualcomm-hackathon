@@ -358,7 +358,16 @@ class MainActivity : AppCompatActivity() {
             runCatching {
                 val bounds = LatLngBounds.builder()
                 route.forEach { bounds.include(LatLng(it[0], it[1])) }
-                map.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(), 48))
+                // The explicit-dimensions overload: the plain one reads the
+                // view size, which is 0 the moment visibility flips, and the
+                // zoom collapses to state level
+                val density = resources.displayMetrics.density
+                val side = (160 * density).toInt()
+                map.moveCamera(
+                    CameraUpdateFactory.newLatLngBounds(
+                        bounds.build(), side, side, (16 * density).toInt(),
+                    )
+                )
             }.onFailure {
                 map.moveCamera(
                     CameraUpdateFactory.newLatLngZoom(LatLng(route[0][0], route[0][1]), 16f)
