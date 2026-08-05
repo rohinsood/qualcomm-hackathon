@@ -376,9 +376,11 @@ class MainActivity : AppCompatActivity() {
                 (maxLng - minLng) * 111_320.0 * cosLat,
                 120.0,
             )
-            val viewPx = 160.0 * resources.displayMetrics.density
-            // meters-per-pixel at zoom z: 156543 * cos(lat) / 2^z
-            val zoom = (Math.log(156_543.03392 * cosLat * viewPx * 0.8 / spanMeters) /
+            // Maps zoom is defined in dp (the world is 256 dp wide at zoom
+            // 0), so the panel size goes in as its 160 dp — using pixels
+            // overshot the zoom by log2(density) and cropped the route
+            val viewDp = 160.0
+            val zoom = (Math.log(156_543.03392 * cosLat * viewDp * 0.8 / spanMeters) /
                 Math.log(2.0)).toFloat().coerceIn(3f, 18f)
             map.moveCamera(
                 CameraUpdateFactory.newLatLngZoom(LatLng(centerLat, centerLng), zoom)
