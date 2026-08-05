@@ -12,14 +12,15 @@ import java.io.File
 import java.nio.FloatBuffer
 
 /**
- * Dense relative depth via Depth-Anything-V2-Small, on the same ONNX
- * Runtime / QNN (Hexagon NPU) stack as [DetectionEngine].
+ * Dense **metric** depth via Depth-Anything-V2-Metric-Indoor-Small, on the
+ * same ONNX Runtime / QNN stack as [DetectionEngine].
  *
- * The model predicts *relative* inverse depth per pixel ("disparity":
- * higher = closer) with unknown per-frame scale;
- * [dev.quad.shepherd.guidance.DepthCalibrator] maps it to meters. This is
- * the class-free proximity sense the detector lacks: walls, poles, and
- * furniture register here even though YOLO has no class for them.
+ * The model predicts distance in METERS per pixel (lower = closer) — a wall
+ * or door directly ahead reads as its actual distance with no calibration
+ * references, including while standing still. This is the class-free
+ * proximity sense the detector lacks: walls, poles, and furniture register
+ * even though YOLO has no class for them.
+ * [dev.quad.shepherd.guidance.DepthCalibrator] only trims scale bias.
  *
  * The input resolution is read from the model itself, so re-exports at a
  * different size (see scripts/export_depth_model.sh) are drop-in.
@@ -39,19 +40,20 @@ class DepthEngine {
         private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
     }
 
-    /** One frame's disparity map plus summary statistics. */
+    /** One frame's metric depth map plus summary statistics. */
     class DepthMap(
-        /** Row-major size x size disparity map; higher = closer. */
+        /** Row-major size x size depth map in meters; LOWER = closer. */
         val map: FloatArray,
         val size: Int,
-        /** Median disparity across the frame, the scene reference level. */
+        /** Median depth across the frame (diagnostics). */
         val sceneMedian: Float,
         val latencyMs: Long,
     ) {
         /**
-         * Near-field disparity (~85th percentile) per vertical column,
-         * sampled in the corridor band (25%..70% of frame height) so that
-         * the sky and the ground at the user's feet do not dominate.
+         * Near-field depth (~15th percentile, i.e. the close tail) per
+         * vertical column, sampled in the corridor band (25%..70% of frame
+         * height) so the sky and the ground at the user's feet do not
+         * dominate.
          */
         fun columnNearField(numColumns: Int): FloatArray {
             val rowLo = (size * 0.25f).toInt()
@@ -74,13 +76,13 @@ class DepthEngine {
                 }
                 if (n > 0) {
                     java.util.Arrays.sort(scratch, 0, n)
-                    out[c] = scratch[(n * 85) / 100]
+                    out[c] = scratch[(n * 15) / 100]
                 }
             }
             return out
         }
 
-        /** Median disparity in the central 50% of a box (map coordinates). */
+        /** Median depth in the central 50% of a box (map coordinates). */
         fun boxMedian(x1: Float, y1: Float, x2: Float, y2: Float): Float? {
             val cx1 = x1 + (x2 - x1) * 0.25f
             val cx2 = x2 - (x2 - x1) * 0.25f

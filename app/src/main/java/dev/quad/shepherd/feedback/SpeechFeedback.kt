@@ -6,20 +6,21 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 
 /**
- * Spoken guidance via Android TTS, with rate limiting so the user isn't
- * flooded: identical messages are deduplicated, non-urgent messages respect
- * a minimum interval, urgent (danger) messages interrupt whatever is playing.
+ * Thin TTS executor. All pacing/deduplication decisions live in
+ * [dev.quad.shepherd.guidance.AnnouncementPolicy]; the one guard kept here
+ * is a backstop against restarting an in-flight utterance with the exact
+ * same text (which produced the "obs- obs- obs-" stutter).
  */
 class SpeechFeedback(context: Context) {
 
     companion object {
         private const val TAG = "SpeechFeedback"
-        private const val MIN_INTERVAL_MS = 2500L
+        private const val SAME_TEXT_GUARD_MS = 1200L
     }
 
     private var ready = false
-    private var lastMessage: String? = null
-    private var lastSpokenAt = 0L
+    private var lastText: String? = null
+    private var lastAt = 0L
 
     private lateinit var tts: TextToSpeech
 
@@ -34,17 +35,18 @@ class SpeechFeedback(context: Context) {
         }
     }
 
-    fun announce(message: String, urgent: Boolean = false) {
+    /**
+     * @param interrupt flush whatever is being spoken (danger entry or a
+     *   changed danger instruction); otherwise queue behind it.
+     */
+    fun announce(text: String, interrupt: Boolean = false) {
         if (!ready) return
         val now = SystemClock.elapsedRealtime()
-        if (!urgent) {
-            if (now - lastSpokenAt < MIN_INTERVAL_MS) return
-            if (message == lastMessage && now - lastSpokenAt < MIN_INTERVAL_MS * 3) return
-        }
-        lastMessage = message
-        lastSpokenAt = now
-        val queueMode = if (urgent) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        tts.speak(message, queueMode, null, "shepherd-${now}")
+        if (text == lastText && now - lastAt < SAME_TEXT_GUARD_MS) return
+        lastText = text
+        lastAt = now
+        val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        tts.speak(text, mode, null, "shepherd-$now")
     }
 
     fun shutdown() {

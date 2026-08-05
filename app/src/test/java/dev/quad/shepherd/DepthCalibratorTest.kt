@@ -3,7 +3,6 @@ package dev.quad.shepherd
 import dev.quad.shepherd.guidance.DepthCalibrator
 import dev.quad.shepherd.guidance.DistanceEstimator
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -11,70 +10,47 @@ import org.junit.Test
 class DepthCalibratorTest {
 
     @Test
-    fun `fits the linear disparity model and inverts it`() {
+    fun `passes metric readings through by default`() {
         val cal = DepthCalibrator()
-        // Ground truth mapping: disparity = 3/z + 0.5
-        for (z in listOf(0.8f, 1.5f, 2f, 3f, 5f, 8f)) {
-            cal.addSample(3f / z + 0.5f, z)
-        }
-        assertTrue(cal.isCalibrated)
-        val z = cal.toMeters(3f / 2.5f + 0.5f)
-        assertNotNull(z)
-        assertEquals(2.5f, z!!, 0.3f)
+        assertEquals(1.4f, cal.convert(1.4f)!!, 0.001f)
+        assertEquals(6f, cal.convert(6f)!!, 0.001f)
     }
 
     @Test
-    fun `calibrated far disparity reads as null`() {
+    fun `implausible readings are rejected`() {
         val cal = DepthCalibrator()
-        for (z in listOf(0.8f, 1.5f, 2f, 3f, 5f, 8f)) {
-            cal.addSample(3f / z + 0.5f, z)
-        }
-        // disparity at the shift value b corresponds to infinity
-        assertNull(cal.toMeters(0.5f))
+        assertNull(cal.convert(0f))
+        assertNull(cal.convert(-1f))
+        assertNull(cal.convert(50f))
+        assertNull(cal.convert(Float.NaN))
     }
 
     @Test
-    fun `uncalibrated relative mode flags looming columns only`() {
+    fun `reference samples trim systematic scale bias`() {
         val cal = DepthCalibrator()
-        assertNull(cal.convert(1.0f, 1.0f))          // at scene level -> no signal
-        val close = cal.convert(3.0f, 1.0f)          // 3x the median -> close
-        assertNotNull(close)
-        assertTrue(close!! <= 1.5f)
-        val mid = cal.convert(2.0f, 1.0f)            // 2x -> caution-ish
-        assertNotNull(mid)
-        assertTrue(mid!! in 1.5f..3f)
+        // Model consistently reads 20% short of trusted pinhole distances
+        repeat(30) { cal.addSample(2.0f, 2.4f) }
+        assertEquals(1.2f, cal.currentScale, 0.05f)
+        assertEquals(2.4f, cal.convert(2.0f)!!, 0.15f)
     }
 
     @Test
-    fun `temporal baseline catches a wall that fills the view`() {
-        // Without history, a wall that IS the scene median gives no signal...
-        val fresh = DepthCalibrator()
-        assertNull(fresh.convert(3.0f, 3.0f))
-
-        // ...but with a remembered normal scene, the same reading warns
+    fun `scale is bounded against absurd references`() {
         val cal = DepthCalibrator()
-        repeat(30) { cal.updateBaseline(1.0f) }
-        val d = cal.convert(3.0f, 3.0f)
-        assertNotNull(d)
-        assertEquals(1.0f, d!!, 0.01f)
+        repeat(50) { cal.addSample(1.0f, 19f) }
+        assertTrue(cal.currentScale <= 2f)
+
+        val cal2 = DepthCalibrator()
+        repeat(50) { cal2.addSample(10f, 0.5f) }
+        assertTrue(cal2.currentScale >= 0.5f)
     }
 
     @Test
-    fun `baseline drifts toward a persistently changed scene`() {
+    fun `out of range samples are ignored`() {
         val cal = DepthCalibrator()
-        repeat(30) { cal.updateBaseline(1.0f) }
-        // Scene legitimately becomes nearer overall (e.g. walked indoors);
-        // after enough frames the baseline follows and stops warning
-        repeat(400) { cal.updateBaseline(3.0f) }
-        assertNull(cal.convert(3.0f, 3.0f))
-    }
-
-    @Test
-    fun `too few or degenerate samples never calibrate`() {
-        val cal = DepthCalibrator()
-        cal.addSample(2f, 2f)
-        cal.addSample(2f, 2f)
-        assertTrue(!cal.isCalibrated)
+        cal.addSample(0.05f, 2f)    // model reading too close to be real
+        cal.addSample(2f, 30f)      // reference outside trusted band
+        assertEquals(1f, cal.currentScale, 0.001f)
     }
 
     @Test

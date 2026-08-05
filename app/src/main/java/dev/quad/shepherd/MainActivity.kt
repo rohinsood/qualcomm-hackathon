@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +20,7 @@ import dev.quad.shepherd.actuator.NoOpActuator
 import dev.quad.shepherd.databinding.ActivityMainBinding
 import dev.quad.shepherd.feedback.HapticFeedback
 import dev.quad.shepherd.feedback.SpeechFeedback
+import dev.quad.shepherd.guidance.AnnouncementPolicy
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.llm.ClaudeSceneDescriber
 import dev.quad.shepherd.llm.SceneDescriber
@@ -38,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private val engine = DetectionEngine()
     private val depthEngine = DepthEngine()
     private val guidanceEngine = GuidanceEngine()
+    private val announcer = AnnouncementPolicy()
     private lateinit var speech: SpeechFeedback
     private lateinit var haptics: HapticFeedback
     private val actuator: CaneActuator = NoOpActuator()
@@ -100,7 +103,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (!ok) {
                 binding.statusText.text = getString(R.string.model_missing)
-                speech.announce(getString(R.string.model_missing), urgent = true)
+                speech.announce(getString(R.string.model_missing), interrupt = true)
                 return@launch
             }
             binding.statusText.text = providerLabel()
@@ -141,8 +144,9 @@ class MainActivity : AppCompatActivity() {
         latestFrame = result.frame
         latestDetections = result.detections
 
+        val now = SystemClock.elapsedRealtime()
         val guidance = guidanceEngine.update(
-            result.detections, result.frameWidth, result.columnDistances,
+            result.detections, result.frameWidth, result.columnDistances, now,
         )
         actuator.sendGuidance(guidance)
 
@@ -156,11 +160,8 @@ class MainActivity : AppCompatActivity() {
             )
             if (guidanceEnabled) {
                 haptics.update(guidance)
-                guidance.message?.let { msg ->
-                    speech.announce(
-                        msg,
-                        urgent = guidance.severity == GuidanceEngine.Severity.DANGER,
-                    )
+                announcer.decide(guidance, now)?.let {
+                    speech.announce(it.text, interrupt = it.interrupt)
                 }
             }
         }
@@ -175,7 +176,7 @@ class MainActivity : AppCompatActivity() {
         if (describing) return
         describing = true
         binding.describeButton.isEnabled = false
-        speech.announce(getString(R.string.describing), urgent = true)
+        speech.announce(getString(R.string.describing), interrupt = true)
 
         lifecycleScope.launch {
             val text = try {
@@ -183,7 +184,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 getString(R.string.describe_failed)
             }
-            speech.announce(text, urgent = true)
+            speech.announce(text, interrupt = true)
             describing = false
             binding.describeButton.isEnabled = true
         }
