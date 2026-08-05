@@ -77,11 +77,15 @@ class MainActivity : AppCompatActivity() {
         haptics = HapticFeedback(this)
         describer = if (BuildConfig.CLAUDE_API_KEY.isNotBlank()) ClaudeSceneDescriber() else null
 
-        binding.describeButton.isEnabled = describer != null
+        // Always enabled: short-press = cloud scene description (needs API
+        // key), long-press = on-device SLM benchmark (step 0)
         if (describer == null) {
             binding.describeButton.text = getString(R.string.describe_disabled)
         }
-        binding.describeButton.setOnClickListener { describeScene() }
+        binding.describeButton.setOnClickListener {
+            if (describer != null) describeScene()
+            else Toast.makeText(this, R.string.bench_hint, Toast.LENGTH_LONG).show()
+        }
         // Step-0 SLM bake-off: long-press runs Qwen3.5-2B on NPU/GPU/CPU
         binding.describeButton.setOnLongClickListener {
             benchLlm()
@@ -234,7 +238,6 @@ class MainActivity : AppCompatActivity() {
         }
         if (describing) return
         describing = true
-        binding.describeButton.isEnabled = false
         speech.announce(getString(R.string.describing), interrupt = true)
 
         lifecycleScope.launch {
@@ -245,7 +248,6 @@ class MainActivity : AppCompatActivity() {
             }
             speech.announce(text, interrupt = true)
             describing = false
-            binding.describeButton.isEnabled = true
         }
     }
 

@@ -9,7 +9,8 @@
     <string name="depth_toggle">Depth</string>
     <string name="describe_button">Describe scene</string>
     <string name="describe_button_a11y">Describe the scene around me using AI</string>
-    <string name="describe_disabled">Describe scene (add claude.apiKey to local.properties)</string>
+    <string name="describe_disabled">Hold: run on-device LLM benchmark</string>
+    <string name="bench_hint">Long-press this button to run the on-device LLM benchmark. (Short-press scene description needs claude.apiKey in local.properties.)</string>
     <string name="describing">Describing the scene, one moment.</string>
     <string name="describe_failed">Scene description failed. Check your network connection.</string>
     <string name="no_frame_yet">No camera frame yet</string>
