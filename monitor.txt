@@ -1,0 +1,2 @@
+Monitoring activity manager...  available commands:
+(q)uit: finish monitoring

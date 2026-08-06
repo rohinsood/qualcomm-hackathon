@@ -1,0 +1,20 @@
+# Android / Gradle
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild/
+.cxx/
+app/build/
+*.apk
+*.aab
+*.ap_
+
+# Model artifacts (large, not committed)
+app/src/main/assets/*.tflite
+app/libs/*.aar
+# depth_model.onnx is ~95MB — too large for plain git; fetch separately (see README)
+app/src/main/assets/depth_model.onnx
