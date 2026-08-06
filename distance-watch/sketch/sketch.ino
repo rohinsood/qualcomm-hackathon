@@ -5,6 +5,7 @@
 ModulinoDistance distance;
 
 bool sensorReady = false;
+float lastMm = NAN;
 unsigned long lastStatusMs = 0;
 unsigned long lastRetryMs = 0;
 
@@ -34,13 +35,19 @@ void loop() {
   // available() is true only when a NEW valid measurement arrived;
   // no target in range produces no data at all.
   if (sensorReady && distance.available()) {
-    Bridge.notify("distance_reading", distance.get());
+    lastMm = distance.get();
+    Bridge.notify("distance_reading", lastMm);
   }
 
-  // 1 Hz heartbeat so the Linux side can tell "no object" apart from "no sensor"
+  // 1 Hz heartbeat so the Linux side can tell "no object" apart from "no sensor",
+  // plus a raw-value debug line on the serial monitor
   if (now - lastStatusMs >= 1000) {
     lastStatusMs = now;
     Bridge.notify("sensor_status", sensorReady);
+    if (sensorReady) {
+      Serial.print("distance mm: ");
+      Serial.println(lastMm);
+    }
   }
 
   delay(20);
