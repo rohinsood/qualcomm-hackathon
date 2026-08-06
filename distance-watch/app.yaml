@@ -1,0 +1,5 @@
+name: Distance Watch
+icon: 📏
+description: Live distance from the Modulino Distance sensor — big red light when an object is in front.
+bricks:
+  - arduino:web_ui
