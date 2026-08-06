@@ -329,7 +329,18 @@ class Bridge:
         for path, ifaces in om.GetManagedObjects().items():
             dev = ifaces.get(DEVICE_IFACE)
             if dev and dev.get("Connected"):
-                self.connected_devices[path] = str(dev.get("Alias", "?"))
+                alias = str(dev.get("Alias", "?"))
+                # A client that connected to a previous bridge instance still
+                # holds a GATT session whose subscriptions died with that
+                # process. Kick it so it reconnects and re-subscribes cleanly.
+                log(f"disconnecting stale client from previous instance: {alias}")
+                try:
+                    dbus.Interface(
+                        self.bus.get_object(BLUEZ, path), DEVICE_IFACE
+                    ).Disconnect(timeout=5)
+                except dbus.exceptions.DBusException as e:
+                    log(f"disconnect of {alias} failed: {e}")
+                    self.connected_devices[path] = alias
 
     def _on_device_props(self, iface, changed, invalidated, path=None):
         if "Connected" not in changed or not path.startswith(self.adapter_path):
