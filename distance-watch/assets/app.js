@@ -12,6 +12,9 @@ const rawHz = $('raw-hz');
 const rawAge = $('raw-age');
 const rawSensor = $('raw-sensor');
 const rawThr = $('raw-thr');
+const rawBt = $('raw-bt');
+const phoneCard = $('phone-card');
+const phoneMsg = $('phone-msg');
 
 function fmtAge(ms) {
   if (ms == null) return '—';
@@ -40,6 +43,14 @@ function render(d) {
   rawAge.textContent = fmtAge(d.age_ms);
   rawSensor.textContent = d.sensor_ok ? 'detected' : 'not detected';
   rawThr.textContent = d.threshold_mm != null ? `< ${d.threshold_mm.toFixed(0)} mm` : '—';
+
+  const bt = d.bt || {};
+  rawBt.textContent = bt.connected
+    ? `connected${bt.device ? ' · ' + bt.device : ''}`
+    : (bt.advertising ? 'advertising' : 'off');
+
+  phoneCard.classList.toggle('hidden', !d.phone_msg);
+  phoneMsg.textContent = d.phone_msg || '';
 }
 
 ui.on_connect(() => {

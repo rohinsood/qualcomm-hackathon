@@ -25,6 +25,11 @@
       <div id="sub" class="stat-sub">waiting for data&hellip;</div>
     </section>
 
+    <section id="phone-card" class="phone hidden">
+      <div class="phone-label">Message from phone</div>
+      <div id="phone-msg" class="phone-msg"></div>
+    </section>
+
     <section class="raw">
       <h2>Raw sensor data</h2>
       <table>
@@ -35,6 +40,7 @@
           <tr><th scope="row">last update age</th><td id="raw-age">&mdash;</td></tr>
           <tr><th scope="row">sensor</th><td id="raw-sensor">&mdash;</td></tr>
           <tr><th scope="row">presence threshold</th><td id="raw-thr">&mdash;</td></tr>
+          <tr><th scope="row">bluetooth</th><td id="raw-bt">&mdash;</td></tr>
         </tbody>
       </table>
       <p class="hint">Red lamp = object closer than the presence threshold. The sensor reports
