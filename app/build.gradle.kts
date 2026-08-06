@@ -72,6 +72,10 @@ dependencies {
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.support)
     implementation(libs.tensorflow.lite.gpu)
+    implementation(libs.tensorflow.lite.gpu.api) // GpuDelegateFactory — needed to construct the GPU delegate
+
+    // Qualcomm QNN TFLite delegate (from the QNN SDK) → runs models on the Hexagon NPU (HTP).
+    implementation(files("libs/qtld-release.aar"))
 
     // ONNX Runtime with the QNN execution provider (QAIRT) — runs .onnx on the
     // Hexagon NPU via addQnn(backend=htp). Superset of the plain onnxruntime-android.

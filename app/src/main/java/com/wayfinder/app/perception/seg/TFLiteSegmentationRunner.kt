@@ -4,148 +4,138 @@ import android.content.Context
 import android.util.Log
 import com.wayfinder.app.core.loop.Frame
 import com.wayfinder.app.perception.ModelRunner
+import org.tensorflow.lite.Delegate
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnApiDelegate
+import com.qualcomm.qti.QnnDelegate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Real semantic-segmentation runner.
+ * Runs the **AI-Hub-compiled int8 Fast-SCNN** (.tflite, device-matched for the S25 Ultra HTP).
  *
- * Acceleration order: **NNAPI → GPU → CPU**. On the S25 Ultra, NNAPI routes
- * supported int8 ops to the **Hexagon NPU** via the Qualcomm vendor driver — this
- * is the on-device NPU path with NO QNN AAR required (the QNN delegate would give
- * tighter control; see the TODO block). Each delegate is wrapped so a failure
- * cleanly falls back.
+ * I/O (verified from the compiled model):
+ *  - Input  `[1, 3, 384, 576]` float32, NCHW, ImageNet-normalized RGB.
+ *  - Output `[1, 1, 384, 576]` int32 — Cityscapes trainId labels; walkable = {road(0), sidewalk(1)}.
  *
- * I/O handled here:
- *  - Input: float32 NHWC, resized from the camera frame, values in [0,255]
- *    (channel order configurable via [inputIsBgr]).
- *  - Output: NHWC logits [1,H,W,numClasses] → argmax over the class axis → label
- *    map → [MaskBuilder] with the configured [walkableClasses].
- *
- * The default config is the **Intel ADAS road-segmentation stopgap** (512×896,
- * 4 classes, road=walkable) — present ONLY to prove on-device NPU inference works.
- * It has no `sidewalk` class and is dashcam-trained, so it is NOT safe for real
- * pedestrian navigation. Swap to a Cityscapes model + `walkableClasses = setOf(7,8)`
- * for real use.
- *
- * ── QNN delegate (optional, tighter than NNAPI) ─────────────────────────────
- *  Add the QNN delegate AAR to app/libs/ + build.gradle.kts, then in [init]:
- *    options.addDelegate(QnnDelegate(QnnDelegate.Options().apply { setBackend("htp") }))
- * ─────────────────────────────────────────────────────────────────────────────
+ * Acceleration: tries the **Adreno GPU delegate**, falls back to CPU/XNNPACK if the GPU rejects
+ * the model (e.g. NCHW/int8 quirks). **NPU-ready**: when the QNN delegate AAR is available, create
+ * it in [buildDelegate] and it runs on the Hexagon NPU (proven 0.6 ms via AI Hub profile).
  */
 class TFLiteSegmentationRunner(
     private val context: Context,
     private val modelAssetName: String = "seg_model.tflite",
-    private val inputWidth: Int = 896,
-    private val inputHeight: Int = 512,
-    private val numClasses: Int = 4,
-    private val walkableClasses: Set<Int> = setOf(1), // ADAS: road
-    private val inputIsBgr: Boolean = false,
-    private val tryNnapi: Boolean = true,
-    private val tryGpu: Boolean = true,
+    private val inputHeight: Int = 384,
+    private val inputWidth: Int = 576,
+    private val walkableClasses: Set<Int> = setOf(0, 1), // Cityscapes trainId: road, sidewalk
+    private val meanRgb: FloatArray = floatArrayOf(0.485f, 0.456f, 0.406f),
+    private val stdRgb: FloatArray = floatArrayOf(0.229f, 0.224f, 0.225f),
+    private val useQnn: Boolean = false,  // NPU gated on retail S25 (CDSP transport err 14001); works on dev-unlocked devices / AI Hub farm.
+    private val useGpu: Boolean = true,
 ) : ModelRunner {
 
     override val name: String = "tflite-seg"
 
-    private val interpreter: Interpreter
+    private val input: ByteBuffer =
+        ByteBuffer.allocateDirect(inputHeight * inputWidth * 3 * 4).order(ByteOrder.nativeOrder())
+    private val output: ByteBuffer =
+        ByteBuffer.allocateDirect(inputHeight * inputWidth * 4).order(ByteOrder.nativeOrder()) // int32 labels
 
-    // float32 NHWC input + pre-allocated NHWC logits output (reused every frame).
-    private val inputBuffer =
-        ByteBuffer.allocateDirect(inputWidth * inputHeight * 3 * 4).order(ByteOrder.nativeOrder())
-    private val logitsOut = Array(1) { Array(inputHeight) { Array(inputWidth) { FloatArray(numClasses) } } }
+    private val interpreter: Interpreter by lazy { createInterpreter() }
 
-    init {
-        val modelBytes = context.assets.open(modelAssetName).use { it.readBytes() }
-        val options = Interpreter.Options()
-        var delegateAttached = false
+    private fun createInterpreter(): Interpreter {
+        val bytes = context.assets.open(modelAssetName).use { it.readBytes() }
+        val modelBuf = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
+        modelBuf.put(bytes); modelBuf.rewind()
 
-        // 1) NNAPI → Hexagon NPU on the S25 Ultra (no QNN AAR needed).
-        if (tryNnapi) {
+        val delegate = buildDelegate()
+        if (delegate != null) {
             try {
-                options.addDelegate(NnApiDelegate(NnApiDelegate.Options().apply { setAllowFp16(true) }))
-                delegateAttached = true
-                Log.i(TAG, "Using NNAPI delegate (targets Hexagon NPU on S25 Ultra).")
+                val interp = Interpreter(modelBuf, Interpreter.Options().addDelegate(delegate))
+                if (smokeTest(interp)) {
+                    Log.i(TAG, "GPU delegate active.")
+                    return interp
+                }
+                interp.close()
+                Log.w(TAG, "GPU delegate rejected model — CPU fallback.")
             } catch (t: Throwable) {
-                Log.w(TAG, "NNAPI delegate unavailable — will try GPU/CPU", t)
+                Log.w(TAG, "GPU delegate init failed — CPU fallback.", t)
+            }
+            // Re-make the model buffer (Interpreter consumed it) for the CPU path.
+            val mb2 = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
+            mb2.put(bytes); mb2.rewind()
+            return Interpreter(mb2, Interpreter.Options().setNumThreads(4))
+        }
+        return Interpreter(modelBuf, Interpreter.Options().setNumThreads(4))
+    }
+
+    /** Create the acceleration delegate. Today: Adreno GPU. NPU: swap in the QNN delegate here. */
+    private fun buildDelegate(): Delegate? {
+        // NPU first (QNN HTP delegate), then Adreno GPU, then CPU.
+        if (useQnn) {
+            try {
+                val opts = QnnDelegate.Options().apply {
+                    setBackendType(QnnDelegate.Options.BackendType.HTP_BACKEND)
+                    setSkelLibraryDir(context.applicationInfo.nativeLibraryDir)
+                }
+                return QnnDelegate(opts).also { Log.i(TAG, "QNN HTP (NPU) delegate created.") }
+            } catch (t: Throwable) {
+                Log.w(TAG, "QnnDelegate failed — trying GPU/CPU.", t)
             }
         }
-        // 2) GPU fallback.
-        if (!delegateAttached && tryGpu && CompatibilityList().isDelegateSupportedOnThisDevice) {
-            options.addDelegate(GpuDelegate())
-            delegateAttached = true
-            Log.i(TAG, "Using GPU delegate.")
-        }
-        if (!delegateAttached) {
-            Log.w(TAG, "No hardware delegate — CPU only, expect low FPS.")
-        }
-
-        options.setNumThreads(4)
-        val bb = ByteBuffer.allocateDirect(modelBytes.size).order(ByteOrder.nativeOrder())
-        bb.put(modelBytes)
-        bb.rewind()
-        interpreter = Interpreter(bb, options)
+        if (useGpu) return try { GpuDelegate() } catch (t: Throwable) { null }
+        return null
     }
 
-    override fun warmUp() {
-        // First call pays NPU context-init cost — run it on a neutral frame before live use.
-        inputBuffer.rewind()
-        while (inputBuffer.hasRemaining()) inputBuffer.putFloat(0f)
-        interpreter.runForMultipleInputsOutputs(arrayOf<Any>(inputBuffer), mutableMapOf<Int, Any>(0 to logitsOut))
+    /** Run a zero-input inference to confirm the delegate actually accepts this model. */
+    private fun smokeTest(interp: Interpreter): Boolean = try {
+        input.rewind(); while (input.hasRemaining()) input.put(0)
+        output.rewind()
+        interp.runForMultipleInputsOutputs(arrayOf<Any>(input), mutableMapOf<Int, Any>(0 to output))
+        true
+    } catch (t: Throwable) {
+        Log.w(TAG, "smoke test failed", t); false
     }
+
+    override fun warmUp() = smokeTest(interpreter).let { }
 
     override fun segment(frame: Frame): WalkableMask {
         preprocess(frame)
-        interpreter.runForMultipleInputsOutputs(arrayOf<Any>(inputBuffer), mutableMapOf<Int, Any>(0 to logitsOut))
-
-        val classes = IntArray(inputWidth * inputHeight)
-        for (y in 0 until inputHeight) {
-            for (x in 0 until inputWidth) {
-                val row = logitsOut[0][y][x]
-                var bestC = 0
-                var bestV = row[0]
-                for (c in 1 until numClasses) {
-                    if (row[c] > bestV) {
-                        bestV = row[c]
-                        bestC = c
-                    }
-                }
-                classes[y * inputWidth + x] = bestC
-            }
-        }
-        return MaskBuilder.build(classes, inputWidth, inputHeight, walkableClasses)
+        output.rewind()
+        interpreter.runForMultipleInputsOutputs(arrayOf<Any>(input), mutableMapOf<Int, Any>(0 to output))
+        val labels = IntArray(inputHeight * inputWidth)
+        output.rewind()
+        output.asIntBuffer().get(labels)
+        return MaskBuilder.build(labels, inputWidth, inputHeight, walkableClasses)
     }
 
-    /** Resize the camera frame into the float32 NHWC input buffer as [0,255] values. */
+    /** Downscale camera frame → float32 NCHW, ImageNet-normalized RGB. */
     private fun preprocess(frame: Frame) {
-        inputBuffer.rewind()
+        input.rewind()
         val sxA = frame.width.toFloat() / inputWidth
         val syA = frame.height.toFloat() / inputHeight
+        val n = inputHeight * inputWidth
+        val rgb = FloatArray(n * 3)
         for (y in 0 until inputHeight) {
             val sy = (y * syA).toInt().coerceIn(0, frame.height - 1)
             for (x in 0 until inputWidth) {
                 val sx = (x * sxA).toInt().coerceIn(0, frame.width - 1)
                 val p = (sy * frame.width + sx) * 4
-                val r = (frame.rgba[p].toInt() and 0xFF).toFloat()
-                val g = (frame.rgba[p + 1].toInt() and 0xFF).toFloat()
-                val b = (frame.rgba[p + 2].toInt() and 0xFF).toFloat()
-                if (inputIsBgr) {
-                    inputBuffer.putFloat(b); inputBuffer.putFloat(g); inputBuffer.putFloat(r)
-                } else {
-                    inputBuffer.putFloat(r); inputBuffer.putFloat(g); inputBuffer.putFloat(b)
-                }
+                val idx = (y * inputWidth + x) * 3
+                rgb[idx] = (frame.rgba[p].toInt() and 0xFF) / 255f
+                rgb[idx + 1] = (frame.rgba[p + 1].toInt() and 0xFF) / 255f
+                rgb[idx + 2] = (frame.rgba[p + 2].toInt() and 0xFF) / 255f
             }
+        }
+        val fb = input.asFloatBuffer()
+        for (c in 0 until 3) {
+            val m = meanRgb[c]; val s = stdRgb[c]
+            for (i in 0 until n) fb.put((rgb[i * 3 + c] - m) / s)
         }
     }
 
-    override fun close() {
-        interpreter.close()
-    }
+    override fun close() = interpreter.close()
 
-    companion object {
-        private const val TAG = "TFLiteSegRunner"
-    }
+    companion object { private const val TAG = "TFLiteSegRunner" }
 }

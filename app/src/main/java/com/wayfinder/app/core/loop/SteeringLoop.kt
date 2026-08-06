@@ -58,13 +58,15 @@ class SteeringLoop(
     fun start() {
         if (running) return
         running = true
-        try {
-            runner.warmUp()
-            depthRunner?.warmUp()
-        } catch (t: Throwable) {
-            Log.e(TAG, "Runner warmup failed", t)
-        }
         job = scope.launch {
+            // Warm up on the background thread so heavy init (interpreter creation,
+            // GPU shader compile) never blocks the UI thread / ANRs.
+            try {
+                runner.warmUp()
+                depthRunner?.warmUp()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Runner warmup failed", t)
+            }
             while (isActive && running) {
                 val frame = frameSlot.takeOrNull()
                 if (frame == null) {

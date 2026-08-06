@@ -60,8 +60,8 @@ class WayfinderEngine(private val context: Context) {
     private fun buildDepthRunner(): DepthRunner {
         if (!USE_REAL_DEPTH) return SyntheticDepthRunner(tunables)
         return try {
-            // Depth-Anything V2 Small via ONNX Runtime (NNAPI → Hexagon NPU).
-            OnnxDepthRunner(context, tunables)
+            // AI-Hub-compiled int8 Depth-Anything via TFLite (GPU delegate; NPU-ready).
+            TFLiteDepthRunner(context, tunables)
         } catch (t: Throwable) {
             Log.w(TAG, "Real depth model unavailable — using synthetic", t)
             SyntheticDepthRunner(tunables)
@@ -144,7 +144,7 @@ class WayfinderEngine(private val context: Context) {
          * to synthetic on failure; set USE_ONNX_SEG=false to use the TFLite runner.
          */
         const val USE_REAL_MODEL = true
-        const val USE_ONNX_SEG = true
+        const val USE_ONNX_SEG = false  // false → AI-Hub-compiled int8 TFLite seg (GPU delegate; NPU-ready)
         const val USE_REAL_DEPTH = true
     }
 }

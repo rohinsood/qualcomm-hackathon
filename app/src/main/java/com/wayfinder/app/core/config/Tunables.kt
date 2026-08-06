@@ -30,12 +30,12 @@ class Tunables(
 
     // ---- Haptics ----
     var hapticPollHz: Float = 20f,
-    var nearPulseIntervalMs: Long = 60,    // pulse cadence at minRange (fast)
-    var farPulseIntervalMs: Long = 1500,   // pulse cadence near the sensitivity edge (slow)
-    var clearPulseIntervalMs: Long = 2000, // "all clear" heartbeat
+    var nearPulseIntervalMs: Long = 450,   // pulse cadence at minRange (calm ~2 Hz, not a buzz)
+    var farPulseIntervalMs: Long = 2200,   // pulse cadence near the sensitivity edge
+    var clearPulseIntervalMs: Long = 4000, // "all clear" heartbeat
 
     // ---- Speech ----
-    var speechMinIntervalMs: Long = 1500,  // don't repeat the same bucket more often than this
+    var speechMinIntervalMs: Long = 3000,  // don't repeat guidance more often than this (avoid chatter)
 
     // ---- Depth layer (M3) ----
     var depthEnabled: Boolean = true,          // master toggle for the depth pipeline
@@ -44,6 +44,6 @@ class Tunables(
     var depthOverrideMeters: Float = 1.0f,     // safety-override: suppress columns closer than this
 
     // ---- Safety ----
-    var decisionTimeoutMs: Long = 1000,    // no fresh decision for this long → fail-safe (CPU-tolerant)
-    var cameraTimeoutMs: Long = 1000,      // no camera frame for this long → fail-safe
+    var decisionTimeoutMs: Long = 3000,    // no fresh decision for this long → fail-safe (tolerant of CPU/GPU jitter)
+    var cameraTimeoutMs: Long = 3000,      // no camera frame for this long → fail-safe
 )

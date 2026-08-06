@@ -102,11 +102,11 @@ class HapticLoop(
     }
 
     companion object {
-        // timings (ms) and amplitudes (0..255) pairs
-        private val T_LEFT = longArrayOf(0, 40, 60, 40); private val A_LEFT = intArrayOf(0, 255, 0, 255)
-        private val T_RIGHT = longArrayOf(0, 180); private val A_RIGHT = intArrayOf(0, 255)
-        private val T_NEUTRAL = longArrayOf(0, 70); private val A_NEUTRAL = intArrayOf(0, 200)
-        private val T_HEARTBEAT = longArrayOf(0, 25); private val A_HEARTBEAT = intArrayOf(0, 120)
+        // timings (ms) and amplitudes (0..255) pairs — kept gentle to avoid a "heavy" feel
+        private val T_LEFT = longArrayOf(0, 35, 70, 35); private val A_LEFT = intArrayOf(0, 170, 0, 170)
+        private val T_RIGHT = longArrayOf(0, 140); private val A_RIGHT = intArrayOf(0, 170)
+        private val T_NEUTRAL = longArrayOf(0, 55); private val A_NEUTRAL = intArrayOf(0, 150)
+        private val T_HEARTBEAT = longArrayOf(0, 20); private val A_HEARTBEAT = intArrayOf(0, 80)
         private val T_FAILSAFE = longArrayOf(0, 90, 70, 90); private val A_FAILSAFE = intArrayOf(0, 255, 0, 255)
         private val WAVE_FAILSAFE = VibrationEffect.createWaveform(T_FAILSAFE, A_FAILSAFE, -1)
         private val WAVE_HEARTBEAT = VibrationEffect.createWaveform(T_HEARTBEAT, A_HEARTBEAT, -1)
