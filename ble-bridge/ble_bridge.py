@@ -38,8 +38,8 @@ NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # phone writes here
 NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # board notifies here
 
-POLL_INTERVAL_MS = 250     # how often we read /api/state
-PUSH_MIN_INTERVAL_S = 0.5  # steady-state notify rate (presence flips push at once)
+POLL_INTERVAL_MS = 250      # how often we read /api/state
+PUSH_MIN_INTERVAL_S = 0.25  # steady-state notify rate (presence flips push at once)
 BT_HEARTBEAT_S = 5         # /api/bt heartbeat (app zeroes BT status if it stops)
 CHUNK = 20                 # fits the minimum BLE ATT payload
 
@@ -182,11 +182,14 @@ class TxCharacteristic(Characteristic):
     def __init__(self, bus, service):
         super().__init__(bus, 0, NUS_TX_UUID, ["read", "notify"], service)
         self.notifying = False
+        self.on_subscribe = None
 
     @dbus.service.method(CHRC_IFACE)
     def StartNotify(self):
         self.notifying = True
         log("phone subscribed to notifications")
+        if self.on_subscribe:
+            self.on_subscribe()
 
     @dbus.service.method(CHRC_IFACE)
     def StopNotify(self):
@@ -257,6 +260,7 @@ class Bridge:
         self.app = Application(bus)
         service = Service(bus, 0, NUS_SERVICE_UUID)
         self.tx = TxCharacteristic(bus, service)
+        self.tx.on_subscribe = self._on_phone_subscribed
         self.rx = RxCharacteristic(bus, service, self.on_phone_text)
         service.characteristics = [self.tx, self.rx]
         self.app.services = [service]
@@ -305,6 +309,11 @@ class Bridge:
         self.advertising = True
         log(f"advertising as '{LOCAL_NAME}'")
         self.post_bt_status()
+
+    def _on_phone_subscribed(self):
+        # Force the next poll (<= 250 ms away) to notify immediately, so a freshly
+        # subscribed phone gets the current state even when the scene is static.
+        self.last_pushed = None
 
     # -- connection tracking
 
