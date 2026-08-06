@@ -3,6 +3,7 @@ package com.example.qhackgps.haptics
 import android.content.Context
 import android.media.AudioAttributes
 import android.os.Build
+import android.os.CombinedVibration
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -21,14 +22,13 @@ import androidx.annotation.RequiresApi
  */
 class ObstacleHaptics(context: Context) {
 
-    private val vibrator: Vibrator? =
+    private val manager: VibratorManager? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)
-                ?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        }
+            context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+        } else null
+
+    private val vibrator: Vibrator? = manager?.defaultVibrator
+        ?: @Suppress("DEPRECATION") (context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
 
     private var buzzing = false
 
@@ -41,10 +41,19 @@ class ObstacleHaptics(context: Context) {
         val v = vibrator ?: return
         if (buzzing || !v.hasVibrator()) return
         buzzing = true
+        val mgr = manager
         try {
             when {
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
-                    v.vibrate(stopWaveform(), VIBRATION_ALARM_ATTRIBUTES)
+                // Drive *every* actuator on the device at once, at alarm usage.
+                // This is the loudest a phone can legally buzz.
+                mgr != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                    mgr.vibrate(
+                        CombinedVibration.createParallel(stopWaveform()),
+                        VIBRATION_ALARM_ATTRIBUTES,
+                    )
+
+                mgr != null ->
+                    mgr.vibrate(CombinedVibration.createParallel(stopWaveform()))
 
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ->
                     @Suppress("DEPRECATION")
@@ -65,16 +74,25 @@ class ObstacleHaptics(context: Context) {
         if (!buzzing) return
         buzzing = false
         try {
-            vibrator?.cancel()
+            manager?.cancel() ?: vibrator?.cancel()
         } catch (_: Exception) {
         }
     }
 
     companion object {
-        /** wait, buzz, gap, buzz, gap, buzz, long gap — then repeat. */
-        private val STOP_PATTERN = longArrayOf(0, 250, 120, 250, 120, 250, 600)
+        /**
+         * Maximum amplitude throughout, and mostly on: a 1.2 s slam to make you
+         * plant your feet, then a relentless long-buzz/short-gap loop. The gaps
+         * are only long enough to keep it feeling like an alarm rather than a
+         * ringtone — nobody walks through this by accident.
+         *
+         * index:            0    1    2    3    4    5    6
+         */
+        private val STOP_PATTERN = longArrayOf(0, 1200, 110, 900, 110, 900, 220)
         private val STOP_AMPLITUDES = intArrayOf(0, 255, 0, 255, 0, 255, 0)
-        private const val REPEAT_FROM = 0
+
+        /** Loop from index 3, so the long opening slam plays once. */
+        private const val REPEAT_FROM = 3
 
         @RequiresApi(Build.VERSION_CODES.O)
         private fun stopWaveform(): VibrationEffect =
