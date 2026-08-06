@@ -271,6 +271,8 @@ class Bridge:
         self.last_pushed = None      # (mm, present) of the last notify
         self.last_push_t = 0.0
         self.app_down_logged = False
+        self.phone_threshold = None   # last threshold the phone asked for, in mm
+        self.threshold_dirty = False  # that value still needs pushing to the app
 
     # -- adapter / registration
 
@@ -281,7 +283,25 @@ class Bridge:
                 return path
         return None
 
+    def _ensure_discoverable(self):
+        """BlueZ does not persist Discoverable across reboots (main.conf has no
+        such key), so re-apply it here — the bridge owns the adapter's public
+        presence, and this runs on every start. Timeouts are zeroed so the board
+        never silently drops out of scan results."""
+        try:
+            props = dbus.Interface(
+                self.bus.get_object(BLUEZ, self.adapter_path), PROP_IFACE
+            )
+            props.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))
+            props.Set(ADAPTER_IFACE, "PairableTimeout", dbus.UInt32(0))
+            props.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
+            props.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
+            log("adapter discoverable + pairable (no timeout)")
+        except dbus.exceptions.DBusException as e:
+            log(f"could not set adapter discoverable: {e}")
+
     def register(self):
+        self._ensure_discoverable()
         gatt_mgr = dbus.Interface(
             self.bus.get_object(BLUEZ, self.adapter_path), GATT_MGR_IFACE
         )
@@ -399,6 +419,18 @@ class Bridge:
             log(f"poll error: {e}")
         return True
 
+    def _reapply_threshold(self):
+        """The phone sends its threshold only when it subscribes, so a write that
+        landed while the app was down is lost — and that is the normal case on a
+        cold boot, where the phone reconnects a good minute before :7000 answers.
+        A restarted app is also back at its own default. Re-send the last value
+        the phone asked for, and keep the flag set until the app confirms it."""
+        resp = http_post_json("/api/threshold", {"mm": self.phone_threshold})
+        if resp and "threshold_mm" in resp:
+            self.threshold_dirty = False
+            log(f"re-applied phone threshold {resp['threshold_mm']:.0f} mm")
+            self.tx.send_line(f'{{"thr":{resp["threshold_mm"]:.0f}}}')
+
     def _poll_state(self):
         state = http_get_json("/api/state")
         if state is None:
@@ -409,6 +441,12 @@ class Bridge:
         if self.app_down_logged:
             log("Distance Watch app reachable again")
             self.app_down_logged = False
+            # It may be a fresh instance sitting at its compiled-in default.
+            if self.phone_threshold is not None:
+                self.threshold_dirty = True
+
+        if self.threshold_dirty and self.phone_threshold is not None:
+            self._reapply_threshold()
 
         mm = state.get("mm")
         present = 1 if state.get("present") else 0
@@ -437,10 +475,14 @@ class Bridge:
             threshold = None
 
         if threshold is not None:
+            self.phone_threshold = threshold
             resp = http_post_json("/api/threshold", {"mm": threshold})
             if resp and "threshold_mm" in resp:
+                self.threshold_dirty = False
                 self.tx.send_line(f'{{"thr":{resp["threshold_mm"]:.0f}}}')
             else:
+                # Hold it: the next successful poll re-sends it for us.
+                self.threshold_dirty = True
                 self.tx.send_line('{"err":"app unreachable"}')
         elif text.lower() == "get":
             state = http_get_json("/api/state")
