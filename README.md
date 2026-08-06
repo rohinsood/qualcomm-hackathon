@@ -132,4 +132,10 @@ The link is automatic: power the cane and the phone finds it within seconds
    for street routes).
 2. `./gradlew :app:assembleDebug` and install, or run from Android Studio.
 
-Min SDK 24 · tested on a Pixel 2 (Android 10) · Compose + Maps Compose.
+Min SDK 24 · tested on a Galaxy S25 Ultra (Android 15) · Compose + Maps Compose.
+
+The HUD deliberately pins its own light, high-contrast palette
+(`ui/theme/Color.kt`) instead of following the system light/dark scheme — it
+floats over a map and is read at a glance outdoors. Pass `contentColor`
+explicitly on any new HUD card: a `containerColor` built with `.copy(alpha =)`
+no longer matches a scheme colour, so Material3 falls back to black text.
