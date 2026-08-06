@@ -22,6 +22,9 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
+    <!-- "Stop" alert buzzed on the phone while the cane sees an obstacle. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <uses-feature
         android:name="android.hardware.sensor.compass"
         android:required="false" />
