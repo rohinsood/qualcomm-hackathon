@@ -14,8 +14,10 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,6 +60,7 @@ class BluetoothGuidanceLink(private val context: Context) {
 
     private var socket: BluetoothSocket? = null
     private var output: OutputStream? = null
+    private var readerJob: Job? = null
     private var desiredDevice: BluetoothDevice? = null
     private var lastAttemptMs = 0L
 
@@ -179,23 +182,37 @@ class BluetoothGuidanceLink(private val context: Context) {
             device.address
         }
         _state.value = BtLinkState.Connecting(name)
+        // Discovery slows RFCOMM connects badly; best-effort cancel.
         try {
-            // Discovery slows RFCOMM connects badly; best-effort cancel.
-            try {
-                adapter?.cancelDiscovery()
-            } catch (_: SecurityException) {
-            }
-            val s = device.createRfcommSocketToServiceRecord(SPP_UUID)
-            s.connect()
+            adapter?.cancelDiscovery()
+        } catch (_: SecurityException) {
+        }
+        val opened = openSocket(device)
+        if (opened != null) {
+            val (s, method) = opened
             socket = s
-            output = s.outputStream
+            output = try {
+                s.outputStream
+            } catch (_: Exception) {
+                null
+            }
+            if (output == null) {
+                closeLocked()
+                _state.value = BtLinkState.Disconnected
+                return
+            }
             _state.value = BtLinkState.Connected(name)
-            // Whatever answered SPP is the Arduino: come straight back to it next launch.
-            prefs.edit().putString(KEY_LAST_DEVICE, device.address).apply()
+            // Whatever answered SPP is the Arduino: come straight back to it —
+            // same device, same handshake — next time.
+            prefs.edit()
+                .putString(KEY_LAST_DEVICE, device.address)
+                .putString(KEY_LAST_METHOD, method)
+                .apply()
             autoTried.clear()
             _autoConnecting.value = false
-            Log.d(TAG, "arduino link up: $name (${device.address})")
-        } catch (_: Exception) {
+            Log.d(TAG, "arduino link up: $name (${device.address}) via $method")
+            startReaderLocked(s)
+        } else {
             closeLocked()
             _state.value = BtLinkState.Disconnected
             if (autoPicked) {
@@ -203,6 +220,92 @@ class BluetoothGuidanceLink(private val context: Context) {
                 autoTried += device.address
                 desiredDevice = null
                 _autoConnecting.value = true
+            }
+        }
+    }
+
+    /**
+     * Open an RFCOMM socket, trying every handshake these modules are known to
+     * need. HC-05/HC-06 clones are famously fussy: the documented SPP lookup
+     * fails outright on some module/phone pairs, an insecure channel (no
+     * PIN-encrypted link) often succeeds where it didn't, and a few only ever
+     * answer on raw channel 1. Whichever works is remembered and tried first
+     * next time, so the steady state is a single fast attempt.
+     *
+     * Returns the connected socket and the name of the method that opened it.
+     */
+    @SuppressLint("MissingPermission")
+    private fun openSocket(device: BluetoothDevice): Pair<BluetoothSocket, String>? {
+        val attempts = linkedMapOf<String, () -> BluetoothSocket>(
+            METHOD_SPP to { device.createRfcommSocketToServiceRecord(SPP_UUID) },
+            METHOD_INSECURE to { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID) },
+            METHOD_CHANNEL1 to { rawChannelSocket(device) },
+        )
+        val preferred = prefs.getString(KEY_LAST_METHOD, null)
+        val order = (listOfNotNull(preferred) + attempts.keys).distinct()
+
+        for (method in order) {
+            val open = attempts[method] ?: continue
+            val s = try {
+                open()
+            } catch (e: Exception) {
+                // e.g. channel-1 reflection blocked by non-SDK restrictions.
+                Log.d(TAG, "arduino: $method unavailable (${e.message})")
+                continue
+            }
+            try {
+                s.connect()
+                return s to method
+            } catch (e: Exception) {
+                Log.d(TAG, "arduino: $method connect failed (${e.message})")
+                try {
+                    s.close()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return null
+    }
+
+    /** Non-SDK API, restricted on recent Android — last resort, always guarded. */
+    private fun rawChannelSocket(device: BluetoothDevice): BluetoothSocket {
+        val method = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+        return method.invoke(device, 1) as BluetoothSocket
+    }
+
+    /**
+     * Drain the module's input until it ends.
+     *
+     * This is the drop detector. Writes into a dead RFCOMM socket can sit in a
+     * buffer and succeed for a long time after the module is switched off, so
+     * waiting for a write to fail leaves the UI claiming "connected" while
+     * nothing arrives. A read returning EOF is immediate and unambiguous.
+     * Anything the sketch prints back is logged as a bonus.
+     */
+    private fun startReaderLocked(s: BluetoothSocket) {
+        readerJob?.cancel()
+        readerJob = scope.launch {
+            val buf = ByteArray(128)
+            try {
+                val input = s.inputStream
+                while (isActive) {
+                    val n = input.read(buf)
+                    if (n < 0) break // EOF: module gone
+                    if (n > 0) {
+                        val text = String(buf, 0, n, Charsets.US_ASCII).trim()
+                        if (text.isNotEmpty()) Log.d(TAG, "arduino says: $text")
+                    }
+                }
+            } catch (_: Exception) {
+                // Socket closed under us, or the module dropped.
+            }
+            mutex.withLock {
+                if (socket === s) {
+                    readerJob = null // it's this coroutine; don't cancel ourselves
+                    closeLocked()
+                    _state.value = BtLinkState.Disconnected
+                    Log.d(TAG, "arduino link lost; retrying")
+                }
             }
         }
     }
@@ -265,6 +368,9 @@ class BluetoothGuidanceLink(private val context: Context) {
     }
 
     private fun closeLocked() {
+        val reader = readerJob
+        readerJob = null
+        reader?.cancel()
         try {
             output?.close()
         } catch (_: Exception) {
@@ -286,6 +392,11 @@ class BluetoothGuidanceLink(private val context: Context) {
 
         private const val PREFS = "qhackgps_bt"
         private const val KEY_LAST_DEVICE = "last_device_address"
+        private const val KEY_LAST_METHOD = "last_connect_method"
+
+        private const val METHOD_SPP = "spp"
+        private const val METHOD_INSECURE = "insecure"
+        private const val METHOD_CHANNEL1 = "channel1"
 
         /** Name fragments of the usual Arduino-side serial modules. */
         private val SERIAL_NAME_HINTS = listOf(
