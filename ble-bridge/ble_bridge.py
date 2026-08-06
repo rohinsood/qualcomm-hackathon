@@ -363,7 +363,27 @@ class Bridge:
 
     # -- app I/O
 
+    def refresh_connected(self):
+        """Re-scan BlueZ for connected devices; signals can be missed (e.g. a
+        client reconnecting in the same instant it was kicked), so the 5 s
+        heartbeat treats this scan as the truth and self-corrects."""
+        try:
+            om = dbus.Interface(self.bus.get_object(BLUEZ, "/"), OM_IFACE)
+            devices = {}
+            for path, ifaces in om.GetManagedObjects().items():
+                dev = ifaces.get(DEVICE_IFACE)
+                if dev and dev.get("Connected") and path.startswith(self.adapter_path):
+                    devices[path] = str(dev.get("Alias", "?"))
+        except dbus.exceptions.DBusException as e:
+            log(f"connected-device scan failed: {e}")
+            return
+        for path, alias in devices.items():
+            if path not in self.connected_devices:
+                log(f"phone connected (seen by scan): {alias}")
+        self.connected_devices = devices
+
     def post_bt_status(self):
+        self.refresh_connected()
         device = next(iter(self.connected_devices.values()), None)
         http_post_json("/api/bt", {
             "advertising": self.advertising,
@@ -451,9 +471,9 @@ def main():
 
     def shutdown(*_):
         log("shutting down")
-        bridge.advertising = False
-        bridge.connected_devices.clear()
-        bridge.post_bt_status()
+        http_post_json("/api/bt", {
+            "advertising": False, "connected": False, "device": None,
+        })
         loop.quit()
         return False
 
