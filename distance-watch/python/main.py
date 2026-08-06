@@ -18,13 +18,16 @@ ui = WebUI()
 _lock = threading.Lock()
 _state = {
     "mm": None,          # latest valid reading from the sensor, millimeters
-    "present": False,    # True while an object is within PRESENCE_MAX_MM
+    "present": False,    # True while an object is within the presence threshold
     "sensor_ok": False,  # True once the sketch reports the Modulino is detected
     "count": 0,          # valid readings received since app start
     "hz": 0.0,           # measured reading rate
     "threshold_mm": PRESENCE_MAX_MM,
+    "phone_msg": None,   # last freeform text received from the phone over BLE
+    "bt": {"advertising": False, "connected": False, "device": None},
 }
 _last_reading_t = 0.0
+_bt_last_t = 0.0
 _last_emit_t = 0.0
 _win_start_t = time.monotonic()
 _win_count = 0
@@ -56,7 +59,7 @@ def on_distance_reading(mm: float):
     _last_reading_t = now
     with _lock:
         _state["mm"] = float(mm)
-        _state["present"] = float(mm) <= PRESENCE_MAX_MM
+        _state["present"] = float(mm) <= _state["threshold_mm"]
         _state["sensor_ok"] = True
         _state["count"] += 1
         _win_count += 1
@@ -90,7 +93,52 @@ def watchdog():
             _state["hz"] = 0.0
             _win_start_t = now
             _win_count = 0
+    # The BLE bridge heartbeats every 5 s; if it stops, show Bluetooth as off.
+    if _bt_last_t and (now - _bt_last_t) > 12.0:
+        with _lock:
+            _state["bt"] = {"advertising": False, "connected": False, "device": None}
     _emit(force=True)
+
+
+def set_threshold(payload: dict):
+    """POST /api/threshold {"mm": <number>} — from the BLE bridge (phone write)."""
+    try:
+        mm = float(payload.get("mm"))
+    except (TypeError, ValueError):
+        return {"error": 'expected {"mm": <number>}'}
+    mm = max(0.0, min(1500.0, mm))
+    with _lock:
+        _state["threshold_mm"] = mm
+        if _state["mm"] is not None:
+            _state["present"] = _state["mm"] <= mm
+    logger.info(f"Presence threshold set to {mm:.0f} mm")
+    _emit(force=True)
+    return {"threshold_mm": mm}
+
+
+def set_phone_msg(payload: dict):
+    """POST /api/phone {"text": "..."} — freeform message from the phone."""
+    text = str(payload.get("text", "")).strip()[:200]
+    with _lock:
+        _state["phone_msg"] = text or None
+    logger.info(f"Message from phone: {text!r}")
+    _emit(force=True)
+    return {"ok": True}
+
+
+def set_bt(payload: dict):
+    """POST /api/bt — advertising/connection status heartbeat from the BLE bridge."""
+    global _bt_last_t
+    _bt_last_t = time.monotonic()
+    with _lock:
+        bt = _state["bt"]
+        for key in ("advertising", "connected"):
+            if key in payload:
+                bt[key] = bool(payload[key])
+        if "device" in payload:
+            bt["device"] = payload["device"] or None
+    _emit(force=True)
+    return {"ok": True}
 
 
 for _name, _handler in (("distance_reading", on_distance_reading),
@@ -102,6 +150,9 @@ for _name, _handler in (("distance_reading", on_distance_reading),
 
 ui.on_connect(lambda sid: ui.send_message("distance", _snapshot(), sid))
 ui.expose_api("GET", "/api/state", _snapshot)
+ui.expose_api("POST", "/api/threshold", set_threshold)
+ui.expose_api("POST", "/api/phone", set_phone_msg)
+ui.expose_api("POST", "/api/bt", set_bt)
 
 logger.info(f"Distance Watch starting; presence threshold = {PRESENCE_MAX_MM:.0f} mm")
 App.run(user_loop=watchdog)
