@@ -35,14 +35,21 @@ data class GuidanceUpdate(
     val lng: Double,
     val destLat: Double,
     val destLng: Double,
+    /** True while the cane reports an object inside the obstacle threshold. */
+    val obstaclePresent: Boolean = false,
+    /** Latest cane distance in mm, -1 when unknown / nothing in range. */
+    val obstacleMm: Int = -1,
 ) {
     /**
      * Serial frame for the Arduino, one ASCII line per frame:
-     * `QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>\n`
-     * e.g. `QG,L,37,171,147,183,0` — turn left 37 deg, 171 m to go, not aligned.
+     * `QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>,<obst>,<obstMM>\n`
+     * e.g. `QG,L,37,171,147,183,0,1,842` — turn left 37 deg, 171 m to go, not
+     * aligned, obstacle 842 mm ahead. When an obstacle is present, `dir`/`deltaDeg`
+     * already carry the avoidance turn, so old 6-field parsers stay correct.
      */
     fun toWireLine(): String =
-        "QG,${direction.wire},$deltaDeg,$distanceM,$headingDeg,$bearingDeg,${if (aligned) 1 else 0}\n"
+        "QG,${direction.wire},$deltaDeg,$distanceM,$headingDeg,$bearingDeg," +
+            "${if (aligned) 1 else 0},${if (obstaclePresent) 1 else 0},$obstacleMm\n"
 
     /** Broadcast for other apps. Register a runtime receiver for [ACTION_GUIDANCE]. */
     fun toBroadcastIntent(): Intent = Intent(ACTION_GUIDANCE)
@@ -56,6 +63,8 @@ data class GuidanceUpdate(
         .putExtra(EXTRA_LNG, lng)
         .putExtra(EXTRA_DEST_LAT, destLat)
         .putExtra(EXTRA_DEST_LNG, destLng)
+        .putExtra(EXTRA_OBSTACLE, obstaclePresent)
+        .putExtra(EXTRA_OBSTACLE_MM, obstacleMm)
         .putExtra(EXTRA_TIMESTAMP_MS, System.currentTimeMillis())
 
     companion object {
@@ -70,6 +79,8 @@ data class GuidanceUpdate(
         const val EXTRA_LNG = "lng"                   // Double, NaN if unknown
         const val EXTRA_DEST_LAT = "destLat"          // Double, NaN if none
         const val EXTRA_DEST_LNG = "destLng"          // Double, NaN if none
+        const val EXTRA_OBSTACLE = "obstacle"         // Boolean, cane sees an object
+        const val EXTRA_OBSTACLE_MM = "obstacleMm"    // Int, -1 unknown/none
         const val EXTRA_TIMESTAMP_MS = "timestampMs"  // Long, wall clock
     }
 }

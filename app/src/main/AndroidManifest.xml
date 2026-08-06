@@ -15,6 +15,12 @@
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- BLE scan for the qhackcane "Distance Watch" peripheral (Android 12+;
+         older versions scan with the location permission we already hold). -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
 
     <uses-feature
         android:name="android.hardware.sensor.compass"
