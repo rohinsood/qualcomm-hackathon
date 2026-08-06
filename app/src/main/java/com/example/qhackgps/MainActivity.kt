@@ -12,6 +12,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
+import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.util.Log
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -75,6 +77,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.qhackgps.bt.BluetoothGuidanceLink
 import com.example.qhackgps.bt.BtLinkState
 import com.example.qhackgps.bt.CaneBleLink
@@ -82,6 +86,7 @@ import com.example.qhackgps.bt.CaneLinkState
 import com.example.qhackgps.guidance.GuidanceBus
 import com.example.qhackgps.guidance.GuidanceUpdate
 import com.example.qhackgps.guidance.TurnDirection
+import com.example.qhackgps.haptics.ObstacleHaptics
 import com.example.qhackgps.ui.theme.QhackGPSTheme
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -120,6 +125,19 @@ private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_COARSE_LOCATION,
 )
 
+/**
+ * Asked for on launch: GPS plus, on Android 12+, the Bluetooth runtime
+ * permissions — both radio links connect on their own, so we need them before
+ * the user touches anything.
+ */
+private val STARTUP_PERMISSIONS: Array<String> = buildList {
+    addAll(LOCATION_PERMISSIONS)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+        add(Manifest.permission.BLUETOOTH_SCAN)
+    }
+}.toTypedArray()
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -147,12 +165,20 @@ fun NavigatorScreen() {
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
+    var hasBtPermission by remember {
+        mutableStateOf(BluetoothGuidanceLink.hasConnectPermission(context))
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants -> hasLocationPermission = grants.values.any { it } }
+    ) { grants ->
+        if (LOCATION_PERMISSIONS.any { grants[it] == true }) hasLocationPermission = true
+        hasBtPermission = BluetoothGuidanceLink.hasConnectPermission(context)
+    }
 
     LaunchedEffect(Unit) {
-        if (!hasLocationPermission) permissionLauncher.launch(LOCATION_PERMISSIONS)
+        if (!hasLocationPermission || !hasBtPermission) {
+            permissionLauncher.launch(STARTUP_PERMISSIONS)
+        }
     }
 
     // ---------- Live location ----------
@@ -276,7 +302,7 @@ fun NavigatorScreen() {
     val caneLink = remember { CaneBleLink(context.applicationContext) }
     val caneState by caneLink.state.collectAsState()
     val caneReading by caneLink.reading.collectAsState()
-    LaunchedEffect(Unit) { caneLink.start() }
+    LaunchedEffect(hasBtPermission) { caneLink.start() }
 
     // An obstacle overrides route guidance: dodge toward the side the route target
     // is on (default right), and hold that side until the path is clear again so
@@ -291,6 +317,31 @@ fun NavigatorScreen() {
     }
     if (avoidance != latchedAvoid) SideEffect { latchedAvoid = avoidance }
 
+    // ---------- "Stop!" haptics ----------
+    // The user is walking and may not be looking at the screen, so an obstacle
+    // buzzes the phone until the path is clear. Silenced while we're in the
+    // background — a phone buzzing forever in someone's pocket helps nobody.
+    val haptics = remember { ObstacleHaptics(context.applicationContext) }
+    var appVisible by remember { mutableStateOf(true) }
+    DisposableEffect(context) {
+        val lifecycle = (context as? ComponentActivity)?.lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> appVisible = true
+                Lifecycle.Event.ON_STOP -> appVisible = false
+                else -> Unit
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose {
+            lifecycle?.removeObserver(observer)
+            haptics.stop()
+        }
+    }
+    LaunchedEffect(obstaclePresent, appVisible) {
+        if (obstaclePresent && appVisible) haptics.startStopAlert() else haptics.stop()
+    }
+
     // ---------- Guidance export (Bluetooth -> Arduino, broadcasts -> other apps) ----------
     val btLink = remember { BluetoothGuidanceLink(context.applicationContext) }
     DisposableEffect(Unit) {
@@ -300,6 +351,12 @@ fun NavigatorScreen() {
         }
     }
     val btState by btLink.state.collectAsState()
+    val btAutoConnecting by btLink.autoConnecting.collectAsState()
+
+    // Find and hold the Arduino's serial module without anyone tapping "BT".
+    LaunchedEffect(hasBtPermission) {
+        if (hasBtPermission) btLink.startAutoConnect()
+    }
 
     val routeDirection = when {
         headingDelta == null -> TurnDirection.NONE
@@ -474,7 +531,7 @@ fun NavigatorScreen() {
                     )
                 }
             }
-            if (btState !is BtLinkState.Disconnected) {
+            if (btState !is BtLinkState.Disconnected || btAutoConnecting) {
                 Spacer(Modifier.height(8.dp))
                 Card(
                     shape = RoundedCornerShape(50),
@@ -486,7 +543,7 @@ fun NavigatorScreen() {
                         text = when (val s = btState) {
                             is BtLinkState.Connected -> "BT → ${s.deviceName}"
                             is BtLinkState.Connecting -> "BT: connecting to ${s.deviceName}…"
-                            else -> ""
+                            else -> "BT: looking for the Arduino…"
                         },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         style = MaterialTheme.typography.bodySmall,
@@ -600,8 +657,8 @@ private fun GuidanceCard(
 
             !compassAvailable -> StatusText("This device has no orientation sensor — can't show heading.")
 
-            // Obstacle reported by the cane: steer the user around it. This wins
-            // over route guidance until the path is clear again.
+            // Obstacle reported by the cane: stop the user (the phone is buzzing),
+            // then steer around it. This wins over route guidance until clear.
             avoidance != null -> Row(
                 modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -609,12 +666,11 @@ private fun GuidanceCard(
                 Box(
                     modifier = Modifier
                         .size(72.dp)
-                        .background(Color(0xFFEF6C00), CircleShape),
+                        .background(Color(0xFFD32F2F), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        if (avoidance == TurnDirection.LEFT) Icons.AutoMirrored.Filled.ArrowBack
-                        else Icons.AutoMirrored.Filled.ArrowForward,
+                        Icons.Default.Warning,
                         contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(44.dp),
@@ -623,8 +679,7 @@ private fun GuidanceCard(
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = if (avoidance == TurnDirection.LEFT) "Object ahead — go left"
-                        else "Object ahead — go right",
+                        text = "Stop — object ahead",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
@@ -634,6 +689,24 @@ private fun GuidanceCard(
                         } ?: "distance unknown",
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (avoidance == TurnDirection.LEFT) Icons.AutoMirrored.Filled.ArrowBack
+                            else Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = null,
+                            tint = Color(0xFFEF6C00),
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (avoidance == TurnDirection.LEFT)
+                                "Then step around to the left."
+                            else "Then step around to the right.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFEF6C00),
+                        )
+                    }
                     Text(
                         text = "Route guidance resumes once the path is clear.",
                         style = MaterialTheme.typography.bodySmall,
@@ -754,8 +827,9 @@ private fun BtDevicePickerDialog(
                         Text("Connecting to ${state.deviceName}…")
                     else ->
                         Text(
-                            "Pick a paired device. Pair your HC-05/HC-06 in Android " +
-                                "Settings first (PIN is usually 1234 or 0000)."
+                            "Connecting automatically to the paired serial module. " +
+                                "Pair your HC-05/HC-06 in Android Settings first (PIN is " +
+                                "usually 1234 or 0000) — pick it below to override."
                         )
                 }
                 Spacer(Modifier.height(12.dp))

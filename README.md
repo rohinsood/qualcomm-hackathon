@@ -34,15 +34,21 @@ sensors/GPS ─> NavigatorScreen ─> GuidanceBus (StateFlow<GuidanceUpdate>)
 ```
 
 - `guidance/Guidance.kt` — `GuidanceUpdate` (the data contract), `GuidanceBus`
-- `bt/BluetoothGuidanceLink.kt` — Bluetooth Classic SPP client, auto-reconnect
+- `bt/BluetoothGuidanceLink.kt` — Bluetooth Classic SPP client, auto-connect +
+  auto-reconnect to the Arduino
 - `bt/CaneBleLink.kt` — BLE central for the qhackcane obstacle sensor
+- `haptics/ObstacleHaptics.kt` — the "stop!" vibration while an object is ahead
 - `NavUtils.kt` — bearing math, polyline decode, Directions fetch
 
 ## Bluetooth protocol (Arduino)
 
 Classic Bluetooth SPP (RFCOMM, UUID `00001101-...`), i.e. HC-05/HC-06/ESP32
-serial. Pair the module in Android settings (PIN usually `1234`), then tap the
-**BT** button in the app and pick it. The app streams one ASCII line ~5x/second:
+serial. Pair the module in Android settings once (PIN usually `1234`) — the app
+then **connects on its own at launch** and keeps the link up: it prefers the
+device that worked last time, otherwise a paired device whose name looks like a
+serial module (`HC-05`, `ESP32`, `JDY-…`, …), rotating through candidates every
+4 s until one answers. Tap **BT** only to override the pick or disconnect.
+The app streams one ASCII line ~5x/second:
 
 ```
 QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>,<obst>,<obstMM>\n
@@ -104,9 +110,15 @@ threshold to **1200 mm** so obstacles register early enough to walk around.
 
 - The HUD shows a live cane chip: `Cane ✓ 0.84 m` / `Cane ✓ clear`.
 - While the cane reports an object inside the threshold, the app shows
-  **"Object ahead — go left/right"** with the measured distance and overrides
-  the exported guidance with that dodge (the side is chosen toward the route
-  target, latched until the path clears so the arrow doesn't flip mid-turn).
+  **"Stop — object ahead"** with the measured distance and the side to step
+  around to, and overrides the exported guidance with that dodge (the side is
+  chosen toward the route target, latched until the path clears so the arrow
+  doesn't flip mid-turn).
+- **The phone vibrates** the whole time an object is in the way — three sharp
+  pulses, a gap, repeat, at alarm priority so it fires through silent mode. You
+  are walking and probably not looking at the screen, so the buzz is the stop
+  signal; it ends the moment the path is clear (and is muted while the app is in
+  the background). See `haptics/ObstacleHaptics.kt`.
 - The avoidance state is mirrored back to the cane's web dashboard as
   `AVOID LEFT` / `AVOID RIGHT` / `CLEAR` ("message from phone").
 
