@@ -78,6 +78,18 @@ Terminal* in "Bluetooth LE" mode), scan, connect to **“Distance Watch”**,
 enable notifications on TX, write text to RX. No pairing required (the link
 is intentionally open — demo hardware).
 
+### qhackGPS companion app
+
+The [qhackGPS](https://github.com/iujab/qhackGPS) Android navigator is the
+primary client: it auto-discovers this peripheral, subscribes to TX, and on
+connect writes `1200` to widen the presence threshold to walking range. While
+an object is inside the threshold the app shows the live distance, steers the
+user around it (left/right), and mirrors that state back here — you'll see
+`AVOID LEFT` / `AVOID RIGHT` / `CLEAR` as the "message from phone" on the
+dashboard. On subscribe, the bridge now pushes the current state immediately
+(no need to wait for the next change) — restart the service after pulling
+that change: `systemctl --user restart qhack-ble-bridge`.
+
 **Service management** (installed, enabled, and linger is on, so it starts at
 boot):
 
