@@ -24,6 +24,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -87,6 +88,14 @@ import com.example.qhackgps.guidance.GuidanceBus
 import com.example.qhackgps.guidance.GuidanceUpdate
 import com.example.qhackgps.guidance.TurnDirection
 import com.example.qhackgps.haptics.ObstacleHaptics
+import com.example.qhackgps.ui.theme.HudAlertSurface
+import com.example.qhackgps.ui.theme.HudBlue
+import com.example.qhackgps.ui.theme.HudGreen
+import com.example.qhackgps.ui.theme.HudInk
+import com.example.qhackgps.ui.theme.HudInkMuted
+import com.example.qhackgps.ui.theme.HudOrange
+import com.example.qhackgps.ui.theme.HudRed
+import com.example.qhackgps.ui.theme.HudSurface
 import com.example.qhackgps.ui.theme.QhackGPSTheme
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -507,46 +516,36 @@ fun NavigatorScreen() {
                 obstacleMm = caneReading?.mm,
                 onGrantPermission = { permissionLauncher.launch(LOCATION_PERMISSIONS) },
             )
-            if (caneState !is CaneLinkState.Disconnected) {
-                Spacer(Modifier.height(8.dp))
-                Card(
-                    shape = RoundedCornerShape(50),
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            if (obstaclePresent) Color(0xFFFFE0B2)
-                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-                    ),
-                ) {
-                    Text(
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.Center) {
+                if (caneState !is CaneLinkState.Disconnected) {
+                    HudChip(
                         text = when (caneState) {
-                            is CaneLinkState.Connected -> "Cane ✓ " + (caneReading?.mm?.let {
+                            is CaneLinkState.Connected -> "Cane " + (caneReading?.mm?.let {
                                 String.format(Locale.US, "%.2f m", it / 1000f)
                             } ?: "clear")
-                            is CaneLinkState.Connecting -> "Cane: connecting…"
-                            CaneLinkState.Scanning -> "Cane: searching…"
+                            is CaneLinkState.Connecting -> "Cane connecting…"
+                            CaneLinkState.Scanning -> "Cane searching…"
                             else -> ""
                         },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-            if (btState !is BtLinkState.Disconnected || btAutoConnecting) {
-                Spacer(Modifier.height(8.dp))
-                Card(
-                    shape = RoundedCornerShape(50),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-                    ),
-                ) {
-                    Text(
-                        text = when (val s = btState) {
-                            is BtLinkState.Connected -> "BT → ${s.deviceName}"
-                            is BtLinkState.Connecting -> "BT: connecting to ${s.deviceName}…"
-                            else -> "BT: looking for the Arduino…"
+                        dotColor = when {
+                            obstaclePresent -> HudOrange
+                            caneState is CaneLinkState.Connected -> HudGreen
+                            else -> HudInkMuted
                         },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.bodySmall,
+                        highlighted = obstaclePresent,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                if (btState !is BtLinkState.Disconnected || btAutoConnecting) {
+                    HudChip(
+                        text = when (val s = btState) {
+                            is BtLinkState.Connected -> "Arduino ${s.deviceName}"
+                            is BtLinkState.Connecting -> "Arduino connecting…"
+                            else -> "Arduino searching…"
+                        },
+                        dotColor =
+                            if (btState is BtLinkState.Connected) HudGreen else HudInkMuted,
                     )
                 }
             }
@@ -634,25 +633,31 @@ private fun GuidanceCard(
     Card(
         // Cap the width so the HUD doesn't span the whole screen in landscape.
         modifier = Modifier
-            .widthIn(max = 480.dp)
+            .widthIn(max = 520.dp)
             .fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
+        // Fixed colors, not theme-derived: a themed surface with an alpha copy
+        // loses its matching contentColor and renders black-on-black in dark mode.
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+            containerColor = if (avoidance != null) HudAlertSurface else HudSurface,
+            contentColor = HudInk,
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
     ) {
         when {
             !hasPermission -> Row(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     "Location permission is required to navigate.",
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = HudInk,
                 )
-                TextButton(onClick = onGrantPermission) { Text("Grant") }
+                TextButton(onClick = onGrantPermission) {
+                    Text("Grant", color = HudBlue, fontWeight = FontWeight.Bold)
+                }
             }
 
             !compassAvailable -> StatusText("This device has no orientation sensor — can't show heading.")
@@ -660,58 +665,52 @@ private fun GuidanceCard(
             // Obstacle reported by the cane: stop the user (the phone is buzzing),
             // then steer around it. This wins over route guidance until clear.
             avoidance != null -> Row(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(72.dp)
-                        .background(Color(0xFFD32F2F), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
+                HudLight(color = HudRed) {
                     Icon(
                         Icons.Default.Warning,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(52.dp),
                     )
                 }
-                Spacer(Modifier.width(16.dp))
+                Spacer(Modifier.width(18.dp))
                 Column {
                     Text(
-                        text = "Stop — object ahead",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
+                        text = "STOP",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Black,
+                        color = HudRed,
                     )
                     Text(
                         text = obstacleMm?.let {
-                            String.format(Locale.US, "%.2f m in front of you", it / 1000f)
-                        } ?: "distance unknown",
-                        style = MaterialTheme.typography.bodyMedium,
+                            String.format(Locale.US, "Object %.2f m ahead", it / 1000f)
+                        } ?: "Object ahead",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = HudInk,
                     )
+                    Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (avoidance == TurnDirection.LEFT) Icons.AutoMirrored.Filled.ArrowBack
                             else Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = null,
-                            tint = Color(0xFFEF6C00),
-                            modifier = Modifier.size(18.dp),
+                            tint = HudOrange,
+                            modifier = Modifier.size(22.dp),
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             text = if (avoidance == TurnDirection.LEFT)
-                                "Then step around to the left."
-                            else "Then step around to the right.",
-                            style = MaterialTheme.typography.bodyMedium,
+                                "Then step around to the left"
+                            else "Then step around to the right",
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFEF6C00),
+                            color = HudOrange,
                         )
                     }
-                    Text(
-                        text = "Route guidance resumes once the path is clear.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    )
                 }
             }
 
@@ -722,20 +721,15 @@ private fun GuidanceCard(
             headingDelta == null -> StatusRow("Reading the compass — move the phone a little…")
 
             else -> Row(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // The "light": green when pointing the right way, red + turn arrow otherwise.
                 val lightColor by animateColorAsState(
-                    targetValue = if (aligned) Color(0xFF00C853) else Color(0xFFD32F2F),
+                    targetValue = if (aligned) HudGreen else HudRed,
                     label = "guidanceLight",
                 )
-                Box(
-                    modifier = Modifier
-                        .size(72.dp)
-                        .background(lightColor, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
+                HudLight(color = lightColor) {
                     val icon = when {
                         aligned -> Icons.Default.Check
                         headingDelta < 0f -> Icons.AutoMirrored.Filled.ArrowBack
@@ -745,19 +739,20 @@ private fun GuidanceCard(
                         icon,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(52.dp),
                     )
                 }
-                Spacer(Modifier.width(16.dp))
+                Spacer(Modifier.width(18.dp))
                 Column {
                     Text(
                         text = when {
-                            aligned -> "Head straight!"
+                            aligned -> "Head straight"
                             headingDelta < 0f -> "Turn left ${abs(headingDelta).roundToInt()}°"
                             else -> "Turn right ${abs(headingDelta).roundToInt()}°"
                         },
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Black,
+                        color = if (aligned) HudGreen else HudInk,
                     )
                     val mode = when {
                         routeLoading -> "finding route…"
@@ -766,18 +761,21 @@ private fun GuidanceCard(
                     }
                     Text(
                         text = "${distanceToDest?.let { formatDistance(it) } ?: "—"} to go • $mode",
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = HudInk,
                     )
                     Text(
                         text = "Heading ${trueHeading.roundToInt()}° • Target ${targetBearing?.roundToInt() ?: "—"}°",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = HudInkMuted,
                     )
                     if (compassNeedsCalibration) {
                         Text(
                             text = "Compass needs calibration — wave the phone in a figure-8.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFF57C00),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = HudOrange,
                         )
                     }
                 }
@@ -868,23 +866,79 @@ private fun BtDevicePickerDialog(
     )
 }
 
+/** The big round status light, with a soft halo in its own colour. */
+@Composable
+private fun HudLight(color: Color, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(84.dp)
+            .background(color.copy(alpha = 0.18f), CircleShape)
+            .padding(6.dp)
+            .background(color, CircleShape),
+        contentAlignment = Alignment.Center,
+        content = { content() },
+    )
+}
+
+/** Small pill under the HUD: a coloured status dot plus a label. */
+@Composable
+private fun HudChip(text: String, dotColor: Color, highlighted: Boolean = false) {
+    Card(
+        shape = RoundedCornerShape(50),
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlighted) HudAlertSurface else HudSurface,
+            contentColor = HudInk,
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .background(dotColor, CircleShape)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = HudInk,
+            )
+        }
+    }
+}
+
 @Composable
 private fun StatusText(message: String) {
     Text(
         text = message,
-        modifier = Modifier.padding(16.dp),
-        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier.padding(20.dp),
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = HudInk,
     )
 }
 
 @Composable
 private fun StatusRow(message: String) {
     Row(
-        modifier = Modifier.padding(16.dp),
+        modifier = Modifier.padding(20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-        Spacer(Modifier.width(12.dp))
-        Text(text = message, style = MaterialTheme.typography.bodyLarge)
+        CircularProgressIndicator(
+            modifier = Modifier.size(22.dp),
+            strokeWidth = 3.dp,
+            color = HudBlue,
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = HudInk,
+        )
     }
 }
