@@ -24,14 +24,18 @@ bus, and two exporters consume it. Future components (camera, object detection)
 can observe the same bus.
 
 ```
+qhackcane (UNO Q + Modulino Distance)
+        │ BLE / Nordic UART: {"mm":842,"p":1}
+        ▼
 sensors/GPS ─> NavigatorScreen ─> GuidanceBus (StateFlow<GuidanceUpdate>)
-                                     ├─> BluetoothGuidanceLink  ─ SPP ─> Arduino ─> motor
-                                     ├─> Broadcast exporter     ─────> other apps
+        ▲                            ├─> BluetoothGuidanceLink  ─ SPP ─> Arduino ─> motor
+   CaneBleLink                       ├─> Broadcast exporter     ─────> other apps
                                      └─> (your future in-app components)
 ```
 
 - `guidance/Guidance.kt` — `GuidanceUpdate` (the data contract), `GuidanceBus`
 - `bt/BluetoothGuidanceLink.kt` — Bluetooth Classic SPP client, auto-reconnect
+- `bt/CaneBleLink.kt` — BLE central for the qhackcane obstacle sensor
 - `NavUtils.kt` — bearing math, polyline decode, Directions fetch
 
 ## Bluetooth protocol (Arduino)
@@ -41,19 +45,22 @@ serial. Pair the module in Android settings (PIN usually `1234`), then tap the
 **BT** button in the app and pick it. The app streams one ASCII line ~5x/second:
 
 ```
-QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>\n
+QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>,<obst>,<obstMM>\n
 ```
 
 | Field        | Meaning                                                   |
 | ------------ | --------------------------------------------------------- |
 | `dir`        | `S` straight (green light) · `L` left · `R` right · `N` no destination |
-| `deltaDeg`   | 0–180, degrees off target                                 |
+| `deltaDeg`   | 0–180, degrees off target (45 nominal while dodging an obstacle) |
 | `distanceM`  | straight-line meters to destination, `-1` if none         |
 | `headingDeg` | camera heading, 0–359 true north, `-1` unknown            |
 | `bearingDeg` | target bearing, 0–359 true north, `-1` none               |
 | `aligned`    | `1` green light, `0` not                                  |
+| `obst`       | `1` while the smart cane reports an object in the way (`dir` already carries the dodge) |
+| `obstMM`     | cane distance to the object in mm, `-1` unknown/none      |
 
-Example: `QG,L,37,171,147,183,0` → turn left 37°, 171 m to go.
+Example: `QG,L,37,171,147,183,0,0,-1` → turn left 37°, 171 m to go, no obstacle.
+Old 6-field parsers keep working — the two extra fields append at the end.
 
 The steady cadence is a heartbeat: **if the Arduino sees no frame for 1 s it
 should stop/center the motor.** A ready-to-flash sketch (servo example +
@@ -68,7 +75,7 @@ Sent whenever the actionable payload changes:
 - **Extras:** `direction` (String: `NONE|STRAIGHT|LEFT|RIGHT`), `deltaDeg` (Int),
   `aligned` (Boolean), `distanceM` (Int), `headingDeg` (Int), `bearingDeg` (Int),
   `lat`/`lng`/`destLat`/`destLng` (Double, `NaN` when unknown),
-  `timestampMs` (Long)
+  `obstacle` (Boolean), `obstacleMm` (Int, `-1` unknown), `timestampMs` (Long)
 
 Consume with a runtime-registered receiver (manifest receivers won't get
 implicit broadcasts since Android 8):
@@ -86,6 +93,25 @@ ContextCompat.registerReceiver(context, receiver,
     IntentFilter("com.example.qhackgps.GUIDANCE"),
     ContextCompat.RECEIVER_EXPORTED)
 ```
+
+## Smart cane input ([qhackcane](https://github.com/iujab/qhackcane), BLE)
+
+The app is also a BLE central for the qhackcane board (Arduino UNO Q + Modulino
+Distance). It scans for the cane's Nordic UART Service (advertised as
+**"Distance Watch"**, no pairing needed), subscribes to the distance stream
+(`{"mm":842,"p":1}` JSON lines), and on connect widens the cane's presence
+threshold to **1200 mm** so obstacles register early enough to walk around.
+
+- The HUD shows a live cane chip: `Cane ✓ 0.84 m` / `Cane ✓ clear`.
+- While the cane reports an object inside the threshold, the app shows
+  **"Object ahead — go left/right"** with the measured distance and overrides
+  the exported guidance with that dodge (the side is chosen toward the route
+  target, latched until the path clears so the arrow doesn't flip mid-turn).
+- The avoidance state is mirrored back to the cane's web dashboard as
+  `AVOID LEFT` / `AVOID RIGHT` / `CLEAR` ("message from phone").
+
+The link is automatic: power the cane and the phone finds it within seconds
+(rescans every few seconds while disconnected). The BT dialog shows its status.
 
 ## Building
 

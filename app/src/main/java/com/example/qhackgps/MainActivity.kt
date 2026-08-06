@@ -77,6 +77,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.qhackgps.bt.BluetoothGuidanceLink
 import com.example.qhackgps.bt.BtLinkState
+import com.example.qhackgps.bt.CaneBleLink
+import com.example.qhackgps.bt.CaneLinkState
 import com.example.qhackgps.guidance.GuidanceBus
 import com.example.qhackgps.guidance.GuidanceUpdate
 import com.example.qhackgps.guidance.TurnDirection
@@ -100,6 +102,7 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -108,6 +111,9 @@ private const val ALIGN_ENTER_DEG = 15f
 
 /** ...and you stay "on course" until you drift beyond this (hysteresis stops flicker). */
 private const val ALIGN_EXIT_DEG = 25f
+
+/** Nominal turn (degrees) exported while steering the user around an obstacle. */
+private const val AVOID_TURN_DEG = 45
 
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -266,22 +272,47 @@ fun NavigatorScreen() {
     }
     if (alignedNow != aligned) SideEffect { aligned = alignedNow }
 
+    // ---------- Smart cane (BLE obstacle sensor) ----------
+    val caneLink = remember { CaneBleLink(context.applicationContext) }
+    val caneState by caneLink.state.collectAsState()
+    val caneReading by caneLink.reading.collectAsState()
+    LaunchedEffect(Unit) { caneLink.start() }
+
+    // An obstacle overrides route guidance: dodge toward the side the route target
+    // is on (default right), and hold that side until the path is clear again so
+    // the arrow doesn't flip while you turn.
+    val obstaclePresent = caneReading?.present == true && caneState is CaneLinkState.Connected
+    var latchedAvoid by remember { mutableStateOf<TurnDirection?>(null) }
+    val avoidance: TurnDirection? = when {
+        !obstaclePresent -> null
+        latchedAvoid != null -> latchedAvoid
+        (headingDelta ?: 0f) < 0f -> TurnDirection.LEFT
+        else -> TurnDirection.RIGHT
+    }
+    if (avoidance != latchedAvoid) SideEffect { latchedAvoid = avoidance }
+
     // ---------- Guidance export (Bluetooth -> Arduino, broadcasts -> other apps) ----------
     val btLink = remember { BluetoothGuidanceLink(context.applicationContext) }
     DisposableEffect(Unit) {
-        onDispose { btLink.shutdown() }
+        onDispose {
+            btLink.shutdown()
+            caneLink.shutdown()
+        }
     }
     val btState by btLink.state.collectAsState()
 
+    val routeDirection = when {
+        headingDelta == null -> TurnDirection.NONE
+        alignedNow -> TurnDirection.STRAIGHT
+        headingDelta < 0f -> TurnDirection.LEFT
+        else -> TurnDirection.RIGHT
+    }
     val guidanceUpdate = GuidanceUpdate(
-        direction = when {
-            headingDelta == null -> TurnDirection.NONE
-            alignedNow -> TurnDirection.STRAIGHT
-            headingDelta < 0f -> TurnDirection.LEFT
-            else -> TurnDirection.RIGHT
-        },
-        deltaDeg = headingDelta?.let { abs(it).roundToInt() } ?: 0,
-        aligned = alignedNow,
+        direction = avoidance ?: routeDirection,
+        deltaDeg =
+            if (avoidance != null) AVOID_TURN_DEG
+            else headingDelta?.let { abs(it).roundToInt() } ?: 0,
+        aligned = alignedNow && avoidance == null,
         distanceM = distanceToDest?.roundToInt() ?: -1,
         headingDeg = if (trueHeading.isNaN()) -1 else trueHeading.roundToInt(),
         bearingDeg = targetBearing?.roundToInt() ?: -1,
@@ -289,8 +320,23 @@ fun NavigatorScreen() {
         lng = curLatLng?.longitude ?: Double.NaN,
         destLat = dest?.latitude ?: Double.NaN,
         destLng = dest?.longitude ?: Double.NaN,
+        obstaclePresent = obstaclePresent,
+        obstacleMm = caneReading?.mm ?: -1,
     )
     SideEffect { GuidanceBus.publish(guidanceUpdate) }
+
+    // Mirror the avoidance state onto the cane's web dashboard ("message from phone").
+    LaunchedEffect(avoidance, caneState) {
+        if (caneState is CaneLinkState.Connected) {
+            caneLink.write(
+                when (avoidance) {
+                    TurnDirection.LEFT -> "AVOID LEFT"
+                    TurnDirection.RIGHT -> "AVOID RIGHT"
+                    else -> "CLEAR"
+                }
+            )
+        }
+    }
 
     // Steady ~5 Hz frame stream to the Arduino; the fixed cadence doubles as its
     // failsafe heartbeat (no frames for 1 s -> motor stops).
@@ -306,7 +352,10 @@ fun NavigatorScreen() {
         var lastKey: List<Any>? = null
         GuidanceBus.updates.collect { update ->
             update ?: return@collect
-            val key = listOf(update.direction, update.deltaDeg, update.aligned, update.distanceM)
+            val key = listOf(
+                update.direction, update.deltaDeg, update.aligned, update.distanceM,
+                update.obstaclePresent, update.obstacleMm / 100,
+            )
             if (key != lastKey) {
                 lastKey = key
                 context.sendBroadcast(update.toBroadcastIntent())
@@ -397,8 +446,34 @@ fun NavigatorScreen() {
                 routeLoading = routeLoading,
                 compassNeedsCalibration =
                     compassAccuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW,
+                avoidance = avoidance,
+                obstacleMm = caneReading?.mm,
                 onGrantPermission = { permissionLauncher.launch(LOCATION_PERMISSIONS) },
             )
+            if (caneState !is CaneLinkState.Disconnected) {
+                Spacer(Modifier.height(8.dp))
+                Card(
+                    shape = RoundedCornerShape(50),
+                    colors = CardDefaults.cardColors(
+                        containerColor =
+                            if (obstaclePresent) Color(0xFFFFE0B2)
+                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                    ),
+                ) {
+                    Text(
+                        text = when (caneState) {
+                            is CaneLinkState.Connected -> "Cane ✓ " + (caneReading?.mm?.let {
+                                String.format(Locale.US, "%.2f m", it / 1000f)
+                            } ?: "clear")
+                            is CaneLinkState.Connecting -> "Cane: connecting…"
+                            CaneLinkState.Scanning -> "Cane: searching…"
+                            else -> ""
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
             if (btState !is BtLinkState.Disconnected) {
                 Spacer(Modifier.height(8.dp))
                 Card(
@@ -436,7 +511,12 @@ fun NavigatorScreen() {
             SmallFloatingActionButton(
                 onClick = {
                     if (BluetoothGuidanceLink.hasConnectPermission(context)) showBtDialog = true
-                    else btPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
+                    else btPermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.BLUETOOTH_CONNECT,
+                            Manifest.permission.BLUETOOTH_SCAN,
+                        )
+                    )
                 },
                 containerColor =
                     if (btState is BtLinkState.Connected) Color(0xFF00C853)
@@ -450,6 +530,8 @@ fun NavigatorScreen() {
                 BtDevicePickerDialog(
                     link = btLink,
                     state = btState,
+                    caneLink = caneLink,
+                    caneState = caneState,
                     onDismiss = { showBtDialog = false },
                 )
             }
@@ -488,6 +570,8 @@ private fun GuidanceCard(
     routeIsRoad: Boolean,
     routeLoading: Boolean,
     compassNeedsCalibration: Boolean,
+    avoidance: TurnDirection?,
+    obstacleMm: Int?,
     onGrantPermission: () -> Unit,
 ) {
     Card(
@@ -515,6 +599,48 @@ private fun GuidanceCard(
             }
 
             !compassAvailable -> StatusText("This device has no orientation sensor — can't show heading.")
+
+            // Obstacle reported by the cane: steer the user around it. This wins
+            // over route guidance until the path is clear again.
+            avoidance != null -> Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .background(Color(0xFFEF6C00), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (avoidance == TurnDirection.LEFT) Icons.AutoMirrored.Filled.ArrowBack
+                        else Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(44.dp),
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+                Column {
+                    Text(
+                        text = if (avoidance == TurnDirection.LEFT) "Object ahead — go left"
+                        else "Object ahead — go right",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = obstacleMm?.let {
+                            String.format(Locale.US, "%.2f m in front of you", it / 1000f)
+                        } ?: "distance unknown",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "Route guidance resumes once the path is clear.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+            }
 
             !destinationSet -> StatusText("Tap anywhere on the map to set your destination.")
 
@@ -592,6 +718,8 @@ private fun GuidanceCard(
 private fun BtDevicePickerDialog(
     link: BluetoothGuidanceLink,
     state: BtLinkState,
+    caneLink: CaneBleLink,
+    caneState: CaneLinkState,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -600,6 +728,25 @@ private fun BtDevicePickerDialog(
         title = { Text("Guidance over Bluetooth") },
         text = {
             Column {
+                Text("Smart cane (BLE)", fontWeight = FontWeight.Bold)
+                Text(
+                    text = when (caneState) {
+                        is CaneLinkState.Connected ->
+                            "Connected to ${caneState.deviceName} — receiving distance."
+                        is CaneLinkState.Connecting -> "Connecting to ${caneState.deviceName}…"
+                        CaneLinkState.Scanning -> "Searching for \"Distance Watch\"…"
+                        else -> "Not connected. Power the cane and it will be found automatically."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row {
+                    TextButton(onClick = { caneLink.start() }) { Text("Search now") }
+                    if (caneState !is CaneLinkState.Disconnected) {
+                        TextButton(onClick = { caneLink.stop() }) { Text("Stop") }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Motor / Arduino (serial)", fontWeight = FontWeight.Bold)
                 when (state) {
                     is BtLinkState.Connected ->
                         Text("Streaming guidance frames to ${state.deviceName}.")

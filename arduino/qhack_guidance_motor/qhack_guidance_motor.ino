@@ -6,7 +6,7 @@
  *
  * Frame format (ASCII, newline-terminated, sent ~5x per second):
  *
- *   QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>
+ *   QG,<dir>,<deltaDeg>,<distanceM>,<headingDeg>,<bearingDeg>,<aligned>,<obst>,<obstMM>
  *
  *   dir       S = straight (pointing the right way)  |  L = turn left
  *             R = turn right                          |  N = no destination set
@@ -14,6 +14,11 @@
  *   distanceM straight-line meters to destination, -1 if none
  *   headingDeg / bearingDeg  0..359 true north, -1 if unknown
  *   aligned   1 = green light, 0 = not aligned
+ *   obst      1 while the smart cane reports an object in the way (the app has
+ *             already turned dir/deltaDeg into the avoidance turn)
+ *   obstMM    cane distance to that object in mm, -1 if unknown
+ *
+ * Older 6-field frames parse fine too (obst/obstMM just stay 0/-1).
  *
  * Example: "QG,L,37,171,147,183,0" -> turn left 37 degrees, 171 m to go.
  *
@@ -69,12 +74,14 @@ void handleLine(char* line) {
   if (strncmp(line, "QG,", 3) != 0) return;
   char dir = 'N';
   int delta = 0, dist = -1, heading = -1, bearing = -1, aligned = 0;
-  int n = sscanf(line, "QG,%c,%d,%d,%d,%d,%d",
-                 &dir, &delta, &dist, &heading, &bearing, &aligned);
+  int obst = 0;
+  long obstMm = -1;
+  int n = sscanf(line, "QG,%c,%d,%d,%d,%d,%d,%d,%ld",
+                 &dir, &delta, &dist, &heading, &bearing, &aligned, &obst, &obstMm);
   if (n < 2) return;
   lastFrameMs = millis();
   Serial.println(line);  // debug echo over USB
-  applyGuidance(dir, delta, aligned != 0);
+  applyGuidance(dir, delta, aligned != 0, obst != 0);
 }
 
 /*
@@ -82,12 +89,16 @@ void handleLine(char* line) {
  * Example below: a steering servo that deflects proportionally to how far off
  * you are pointing, plus the built-in LED as the "green light".
  *
+ * When `obstacle` is true the direction already encodes the dodge around the
+ * object the cane sees — treat it with priority (e.g. stronger haptics).
+ *
  * Vibration-motor idea: buzz left/right motors with intensity ~ delta.
  * DC motor idea: map dir/delta to H-bridge direction + PWM duty.
  */
-void applyGuidance(char dir, int delta, bool aligned) {
+void applyGuidance(char dir, int delta, bool aligned, bool obstacle) {
   digitalWrite(LED_BUILTIN, aligned ? HIGH : LOW);
   int amount = (constrain(delta, 0, 90) * 2) / 3;  // 0..60 degrees of throw
+  if (obstacle) amount = 60;                       // hard dodge cue
   if (dir == 'L') {
     steer.write(90 - amount);
   } else if (dir == 'R') {
