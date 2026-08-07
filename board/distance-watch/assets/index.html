@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Distance Watch</title>
+  <title>QCane Link</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main>
     <header>
-      <h1>&#128207; Distance Watch</h1>
+      <h1>&#128279; QCane Link</h1>
       <span id="conn" class="pill">Connecting&hellip;</span>
     </header>
 
@@ -25,26 +25,79 @@
       <div id="sub" class="stat-sub">waiting for data&hellip;</div>
     </section>
 
-    <section id="phone-card" class="phone hidden">
-      <div class="phone-label">Message from phone</div>
-      <div id="phone-msg" class="phone-msg"></div>
+    <section class="card">
+      <h2>Manual controls</h2>
+      <div class="btn-row">
+        <button id="btn-left" class="btn dir" aria-pressed="false">&#9664; Spin left</button>
+        <button id="btn-stop" class="btn dir" aria-pressed="true">&#9632; Stop</button>
+        <button id="btn-right" class="btn dir" aria-pressed="false">Spin right &#9654;</button>
+      </div>
+      <div class="btn-row">
+        <button id="btn-buzz" class="btn">Buzz vibro (600 ms)</button>
+      </div>
+      <p class="hint">Buttons command the board the same way the phone does; the
+        active spin direction stays lit. The sketch stops everything on its own
+        if the link goes quiet for 2&nbsp;s.</p>
     </section>
 
-    <section class="raw">
-      <h2>Raw sensor data</h2>
+    <section class="card">
+      <h2>Distance Modulino</h2>
       <table>
         <tbody>
-          <tr><th scope="row">last reading (mm)</th><td id="raw-mm">&mdash;</td></tr>
+          <tr><th scope="row">module</th><td id="dist-status">&mdash;</td></tr>
+          <tr><th scope="row">last reading</th><td id="raw-mm">&mdash;</td></tr>
           <tr><th scope="row">readings received</th><td id="raw-count">0</td></tr>
           <tr><th scope="row">update rate</th><td id="raw-hz">&mdash;</td></tr>
           <tr><th scope="row">last update age</th><td id="raw-age">&mdash;</td></tr>
-          <tr><th scope="row">sensor</th><td id="raw-sensor">&mdash;</td></tr>
           <tr><th scope="row">presence threshold</th><td id="raw-thr">&mdash;</td></tr>
-          <tr><th scope="row">bluetooth</th><td id="raw-bt">&mdash;</td></tr>
         </tbody>
       </table>
       <p class="hint">Red lamp = object closer than the presence threshold. The sensor reports
         nothing at all when no target is in range (&asymp; beyond ~1.2 m).</p>
+    </section>
+
+    <section class="card">
+      <h2>Motors Modulino</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">module</th><td id="mot-status">&mdash;</td></tr>
+          <tr><th scope="row">commanded</th><td id="mot-cmd">stop</td></tr>
+          <tr><th scope="row">applied by sketch</th><td id="mot-applied">stop</td></tr>
+          <tr><th scope="row">current &middot; channel A (1A/2A)</th><td id="mot-ma-a">&mdash;</td></tr>
+          <tr><th scope="row">current &middot; channel B</th><td id="mot-ma-b">&mdash;</td></tr>
+          <tr><th scope="row">driver busy</th><td id="mot-busy">&mdash;</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">The module firmware reports current sense only &mdash; VM voltage is not
+        readable over I&sup2;C; the yellow VM LED on the module means motor power is present.</p>
+    </section>
+
+    <section class="card">
+      <h2>Vibro Modulino</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">module</th><td id="vib-status">&mdash;</td></tr>
+          <tr><th scope="row">haptics</th><td id="vib-active">idle</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Buzzes in a 250&nbsp;ms&nbsp;/&nbsp;500&nbsp;ms rhythm while an object is inside
+        the presence threshold; the button above fires a one-shot buzz.</p>
+    </section>
+
+    <section class="card">
+      <h2>Bluetooth</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">link</th><td id="bt-state">&mdash;</td></tr>
+          <tr><th scope="row">device</th><td id="bt-device">&mdash;</td></tr>
+          <tr><th scope="row">last message from phone</th><td id="bt-msg">&mdash;</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Event log</h2>
+      <ol id="events" class="events"><li class="ev-empty">no events yet</li></ol>
     </section>
   </main>
 
