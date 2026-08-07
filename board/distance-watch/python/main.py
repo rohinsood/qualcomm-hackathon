@@ -15,6 +15,8 @@ STALE_AFTER_S = 1.0
 EMIT_MIN_INTERVAL_S = 0.05
 # Dashboard event log depth.
 EVENT_LOG_LEN = 30
+# Motor telemetry history depth for the dashboard graphs (2 Hz -> 2 minutes).
+MOTOR_HISTORY_LEN = 240
 
 ui = WebUI()
 
@@ -33,12 +35,15 @@ _state = {
     "motor_ma_a": None,  # sensed current on channel A (the steering motor), mA
     "motor_ma_b": None,  # sensed current on channel B (unused terminals), mA
     "motor_applied": 0,  # direction the sketch is actually applying right now
+    "motor_duty_pct": 0, # signed PWM duty the sketch applies = voltage as % of VM
+    "motor_t": None,     # epoch seconds of the latest motor telemetry sample
     "motor_busy": False, # driver busy flag from module telemetry
     "vibro_active": False,  # True while the sketch is running the pulse rhythm
     "bt": {"advertising": False, "connected": False, "device": None},
     "events": [],        # rolling event log, newest last: [{"t": "HH:MM:SS", "msg": ...}]
 }
 _events = deque(maxlen=EVENT_LOG_LEN)
+_motor_history = deque(maxlen=MOTOR_HISTORY_LEN)
 _last_reading_t = 0.0
 _bt_last_t = 0.0
 _last_emit_t = 0.0
@@ -46,10 +51,15 @@ _win_start_t = time.monotonic()
 _win_count = 0
 
 
-def _snapshot() -> dict:
+def _snapshot(history: bool = False) -> dict:
+    """State snapshot. The motor graph history rides along only on demand
+    (initial websocket push + GET /api/state) — live updates append
+    client-side from the regular state stream."""
     with _lock:
         snap = dict(_state)
         snap["events"] = list(_events)
+        if history:
+            snap["motor_history"] = list(_motor_history)
     snap["age_ms"] = int((time.monotonic() - _last_reading_t) * 1000) if _last_reading_t else None
     return snap
 
@@ -173,14 +183,19 @@ def on_actuator_status(mask):
         _log_event(f"Modulino Vibro {'detected' if vibro_ok else 'not detected'}")
 
 
-def on_motor_telemetry(ma_a, ma_b, applied, vibro_active, busy):
+def on_motor_telemetry(ma_a, ma_b, applied, duty_pct, vibro_active, busy):
     """Bridge handler: 2 Hz motor module telemetry pushed by the sketch."""
+    now_t = round(time.time(), 2)
+    ma_a = round(float(ma_a), 1)
     with _lock:
-        _state["motor_ma_a"] = round(float(ma_a), 1)
+        _state["motor_ma_a"] = ma_a
         _state["motor_ma_b"] = round(float(ma_b), 1)
         _state["motor_applied"] = int(applied)
+        _state["motor_duty_pct"] = int(duty_pct)
+        _state["motor_t"] = now_t
         _state["vibro_active"] = bool(vibro_active)
         _state["motor_busy"] = bool(busy)
+        _motor_history.append({"t": now_t, "ma": ma_a, "duty": int(duty_pct)})
     _emit()
 
 
@@ -301,8 +316,8 @@ for _name, _handler in (("distance_reading", on_distance_reading),
     except RuntimeError:
         logger.debug(f"'{_name}' already registered")
 
-ui.on_connect(lambda sid: ui.send_message("distance", _snapshot(), sid))
-ui.expose_api("GET", "/api/state", _snapshot)
+ui.on_connect(lambda sid: ui.send_message("distance", _snapshot(history=True), sid))
+ui.expose_api("GET", "/api/state", lambda: _snapshot(history=True))
 ui.expose_api("POST", "/api/threshold", set_threshold)
 ui.expose_api("POST", "/api/phone", set_phone_msg)
 ui.expose_api("POST", "/api/motor", set_motor_api)

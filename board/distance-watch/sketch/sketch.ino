@@ -173,8 +173,9 @@ void loop() {
   }
 
   // 2 Hz motor telemetry for the dashboard: current sense per channel (mA),
-  // what the sketch is actually applying, and the driver busy flag. The
-  // firmware does not report VM voltage, so current is the electrical truth.
+  // what the sketch is actually applying (direction + signed PWM duty), and
+  // the driver busy flag. The firmware does not report VM voltage; the signed
+  // duty is the applied output voltage as a fraction of VM.
   if (motorsReady && (now - lastTelemetryMs >= TELEMETRY_MS)) {
     lastTelemetryMs = now;
     if (motors.update()) {
@@ -182,6 +183,7 @@ void loop() {
                     motors.sensedCurrentA(),
                     motors.sensedCurrentB(),
                     appliedMotor,
+                    appliedMotor * MOTOR_SPEED_PCT,
                     vibroActive ? 1 : 0,
                     motors.busy() ? 1 : 0);
     }
