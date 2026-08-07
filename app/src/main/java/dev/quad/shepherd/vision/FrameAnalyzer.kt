@@ -221,7 +221,8 @@ class FrameAnalyzer(
 
         // v2: plan every frame on the persistent grid (cheap raycasts)
         val plan = path?.plan()
-        val gridDebug = if (depthDebugEnabled) path?.grid?.renderDebug() else null
+        // Always rendered: the map-first UI floats the BEV grid over the map
+        val gridDebug = path?.grid?.renderDebug()
 
         onResult(
             FrameResult(

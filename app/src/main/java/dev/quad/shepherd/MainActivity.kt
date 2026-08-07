@@ -65,6 +65,31 @@ class MainActivity : AppCompatActivity() {
     private var destMarker: Marker? = null
     private var beeline: com.google.android.gms.maps.model.Polyline? = null
 
+    /** Facing-direction arrow for the user marker (rotated by heading). */
+    private val arrowIcon by lazy {
+        val size = 96
+        val bmp = android.graphics.Bitmap.createBitmap(
+            size, size, android.graphics.Bitmap.Config.ARGB_8888,
+        )
+        val canvas = android.graphics.Canvas(bmp)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        val path = android.graphics.Path().apply {
+            moveTo(size / 2f, 4f)
+            lineTo(size * 0.84f, size * 0.9f)
+            lineTo(size / 2f, size * 0.66f)
+            lineTo(size * 0.16f, size * 0.9f)
+            close()
+        }
+        paint.color = 0xFF1E88E5.toInt()
+        paint.style = android.graphics.Paint.Style.FILL
+        canvas.drawPath(path, paint)
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeWidth = 5f
+        paint.color = android.graphics.Color.WHITE
+        canvas.drawPath(path, paint)
+        BitmapDescriptorFactory.fromBitmap(bmp)
+    }
+
     private val uiListener = object : ShepherdService.UiListener {
         override fun onFrame(result: FrameResult, guidance: GuidanceEngine.Guidance) {
             runOnUiThread {
@@ -173,8 +198,12 @@ class MainActivity : AppCompatActivity() {
         binding.audioToggle.setOnCheckedChangeListener { _, checked ->
             service?.guidanceEnabled = checked
         }
+        // Map-first UI: the camera + depth heatmap live behind this toggle
         binding.depthToggle.setOnCheckedChangeListener { _, checked ->
             service?.setDepthDebug(checked)
+            binding.overlay.mapMode = !checked
+            binding.previewView.visibility = if (checked) View.VISIBLE else View.INVISIBLE
+            binding.mapView.visibility = if (checked) View.GONE else View.VISIBLE
         }
         binding.debugToggle.setOnCheckedChangeListener { _, checked ->
             binding.debugText.visibility = if (checked) View.VISIBLE else View.GONE
@@ -353,13 +382,18 @@ class MainActivity : AppCompatActivity() {
         val here = nav.lastLatLng?.let { LatLng(it[0], it[1]) }
         val dest = nav.destination?.let { LatLng(it[0], it[1]) }
 
-        // User marker
+        // User marker: a flat arrow rotated to the compass heading
         if (here != null) {
-            positionMarker?.let { it.position = here } ?: run {
+            val heading = nav.headingDeg
+            positionMarker?.let { m ->
+                m.position = here
+                if (!heading.isNaN()) m.rotation = heading
+            } ?: run {
                 positionMarker = map.addMarker(
                     MarkerOptions()
                         .position(here)
-                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE))
+                        .icon(arrowIcon)
+                        .flat(true)
                         .anchor(0.5f, 0.5f)
                 )
                 map.moveCamera(CameraUpdateFactory.newLatLngZoom(here, 17f))

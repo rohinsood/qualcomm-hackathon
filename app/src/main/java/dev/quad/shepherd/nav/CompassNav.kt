@@ -90,6 +90,12 @@ class CompassNav(
         }
     }
 
+    /**
+     * Heading + fixes without a destination: keeps the map's facing arrow
+     * and the scene digest live from app start.
+     */
+    fun startPassive() = startSensors()
+
     /** Set the destination directly (map tap). Main thread. */
     @SuppressLint("MissingPermission")
     fun setDestination(lat: Double, lng: Double, label: String? = null) {

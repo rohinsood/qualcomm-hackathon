@@ -31,6 +31,13 @@ class OverlayView @JvmOverloads constructor(
     /** Height of the system gesture/navigation bar, set from window insets. */
     var bottomInset: Int = 0
 
+    /**
+     * Map-first mode (default): the camera is hidden, so skip frame-space
+     * drawings (boxes, depth, corridor) and keep only the BEV grid and the
+     * threat bar floating over the map.
+     */
+    @Volatile var mapMode = true
+
     private val boxPaint = Paint().apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
@@ -77,6 +84,13 @@ class OverlayView @JvmOverloads constructor(
             canvas.save()
             canvas.rotate(rot.toFloat(), width / 2f, height / 2f)
             canvas.translate((width - vw) / 2f, (height - vh) / 2f)
+        }
+
+        if (mapMode) {
+            drawGrid(canvas, r, vh, rot != 0)
+            if (rot != 0) canvas.restore()
+            drawThreatBar(canvas, g.columnThreat)
+            return
         }
 
         // fitCenter transform from frame space to (rotated) view space
