@@ -97,12 +97,17 @@
         android:visibility="gone"
         android:importantForAccessibility="no" />
 
+    <!-- Hidden, not removed: the steer card blocked the middle of the map,
+         and the map + spoken cues + wheel already carry the guidance. The
+         render() calls in MainActivity are harmless against a GONE view;
+         flip this back to visible to bring the arrow card back. -->
     <dev.quad.shepherd.ui.SteerView
         android:id="@+id/steerView"
         android:layout_width="190dp"
         android:layout_height="170dp"
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="120dp"
+        android:visibility="gone"
         android:importantForAccessibility="no" />
 
     <com.google.android.material.button.MaterialButton
