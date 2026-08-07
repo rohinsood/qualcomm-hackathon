@@ -57,12 +57,24 @@ data class FrameResult(
  */
 class FrameAnalyzer(
     private val engine: DetectionEngine,
+    /** INDOOR metric depth (Hypersim fine-tune). */
     private val depthEngine: DepthEngine?,
     private val onResult: (FrameResult) -> Unit,
+    /** FFNet, Cityscapes — the OUTDOOR walkability expert. */
     private val segEngine: SegEngine? = null,
     private val path: PathPipeline? = null,
+    /** SegFormer ADE20K — the INDOOR walkability expert. */
     private val segEngine2: SegEngine? = null,
+    /** OUTDOOR metric depth (VKITTI fine-tune), used when [indoorMode] off. */
+    private val depthEngineOutdoor: DepthEngine? = null,
 ) : ImageAnalysis.Analyzer {
+
+    /**
+     * Mirrors the nav mode: each domain gets ITS models — indoor runs
+     * ADE seg + Hypersim depth, outdoor runs FFNet seg + VKITTI depth
+     * (falling back to whichever member is actually loaded).
+     */
+    @Volatile var indoorMode = false
 
     companion object {
         /** Minimum interval between depth model runs. */
@@ -179,12 +191,18 @@ class FrameAnalyzer(
         val modelSpace = lastModelSpace
         val detectLatency = lastDetectLatency
 
-        // Dense metric depth, time-gated: walls don't move at frame rate
+        // Dense metric depth, time-gated: walls don't move at frame rate.
+        // The engine is domain-matched to the nav mode when both are loaded.
+        val indoor = indoorMode
+        val activeDepth = when {
+            indoor -> depthEngine ?: depthEngineOutdoor
+            else -> depthEngineOutdoor ?: depthEngine
+        }
         val depth = if (
-            depthEngine?.available == true &&
+            activeDepth?.available == true &&
             SystemClock.elapsedRealtime() - lastDepthAt >= DEPTH_INTERVAL_MS
         ) {
-            depthEngine.analyze(letterboxBitmap)?.also {
+            activeDepth.analyze(letterboxBitmap)?.also {
                 lastDepthAt = SystemClock.elapsedRealtime()
                 // The letterbox bars are black padding, yet the depth model
                 // hallucinates geometry for them (up to 25% of the square!)
@@ -220,12 +238,13 @@ class FrameAnalyzer(
             } else null
 
             // ---- v2: fold this depth frame into the traversability grid.
-            // Segmentation is an ENSEMBLE: FFNet (outdoor expert, inline —
-            // ~3 ms on the NPU) + the ADE20K member (knows floors, async);
-            // a pixel is walkable when either model votes for it.
+            // Segmentation is DOMAIN-MATCHED to the nav mode: outdoor runs
+            // FFNet (Cityscapes, inline on the NPU), indoor runs the ADE20K
+            // member (knows floors, async) — each expert on its own turf,
+            // and half the seg compute of the always-both ensemble.
             path?.let { p ->
-                val engA = segEngine
-                val engB = segEngine2
+                val engA = if (indoor) null else segEngine
+                val engB = if (indoor) segEngine2 else null
                 val tSeg = SystemClock.elapsedRealtime()
                 val segA = engA?.segment(upright)
                 ffnetMs = SystemClock.elapsedRealtime() - tSeg
@@ -245,7 +264,7 @@ class FrameAnalyzer(
                 }
                 val tGrid = SystemClock.elapsedRealtime()
                 val merged = mergedWalkable(
-                    segA, engA, lastAdeSeg, engB,
+                    segA, engA, if (engB != null) lastAdeSeg else null, engB,
                     depth.size, padX, padY, scale, upright,
                 )
                 // The Wayfinder columns follow the ENSEMBLE view: FFNet
@@ -299,7 +318,8 @@ class FrameAnalyzer(
         if (depth != null && ++timeLogCounter % 5 == 0) {
             android.util.Log.i(
                 "ShepherdTime",
-                "yolo=${detectLatency}ms(1Hz) depth=${depth.latencyMs}ms " +
+                "mode=${if (indoor) "in" else "out"} " +
+                    "yolo=${detectLatency}ms(1Hz) depth=${depth.latencyMs}ms " +
                     "ffnet=${ffnetMs}ms ade=${lastAdeMs}ms(async) " +
                     "grid=${gridMs}ms plan=${planMs}ms " +
                     "e2e=${SystemClock.elapsedRealtime() - nowMs}ms " +

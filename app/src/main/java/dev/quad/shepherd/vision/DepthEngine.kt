@@ -29,11 +29,15 @@ import java.nio.FloatBuffer
  * Not thread-safe. Call from the single analysis thread; the returned map
  * buffer is reused across calls.
  */
-class DepthEngine {
+class DepthEngine(
+    /** ONNX file under `<external-files>/models/` (or an asset name). The
+     *  default is the INDOOR (Hypersim) metric export; the service also
+     *  loads the OUTDOOR (VKITTI) sibling and picks per nav mode. */
+    private val modelFile: String = "depth_anything_v2_small.onnx",
+) {
 
     companion object {
         private const val TAG = "DepthEngine"
-        const val MODEL_FILE = "depth_anything_v2_small.onnx"
         private const val DEFAULT_INPUT_SIZE = 294
         /**
          * Depth analysis band, as fractions of frame height: the top cut
@@ -133,7 +137,7 @@ class DepthEngine {
     /** Loads the model if present. Call off the main thread. */
     fun initialize(context: Context): Boolean {
         val bytes = loadModelBytes(context) ?: run {
-            Log.i(TAG, "$MODEL_FILE not found, running detection-only")
+            Log.i(TAG, "$modelFile not found, running without it")
             return false
         }
         val created = OrtSessions.create(env, bytes, TAG) ?: return false
@@ -150,7 +154,7 @@ class DepthEngine {
         output = FloatArray(inputSize * inputSize)
         medianScratch = FloatArray(inputSize * inputSize / 16 + 1)
 
-        Log.i(TAG, "Depth session ready on $activeProvider, input ${inputSize}x$inputSize")
+        Log.i(TAG, "$modelFile ready on $activeProvider, input ${inputSize}x$inputSize")
         return true
     }
 
@@ -210,13 +214,13 @@ class DepthEngine {
     }
 
     private fun loadModelBytes(context: Context): ByteArray? {
-        val pushed = File(context.getExternalFilesDir(null), "models/$MODEL_FILE")
+        val pushed = File(context.getExternalFilesDir(null), "models/$modelFile")
         if (pushed.exists()) {
             Log.i(TAG, "Loading depth model from ${pushed.absolutePath}")
             return pushed.readBytes()
         }
         return try {
-            context.assets.open(MODEL_FILE).use { it.readBytes() }
+            context.assets.open(modelFile).use { it.readBytes() }
         } catch (e: Exception) {
             null
         }

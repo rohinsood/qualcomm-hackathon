@@ -32,18 +32,13 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:background="#88000000"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:padding="8dp">
 
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_gravity="center_vertical"
-            android:textColor="@android:color/white"
-            android:textSize="13sp"
-            android:text="@string/loading_model" />
+            android:orientation="horizontal">
 
         <com.google.android.material.switchmaterial.SwitchMaterial
             android:id="@+id/navModeToggle"
@@ -76,6 +71,16 @@
             android:layout_marginStart="8dp"
             android:text="@string/debug_toggle"
             android:textColor="@android:color/white" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@android:color/white"
+            android:textSize="13sp"
+            android:text="@string/loading_model" />
     </LinearLayout>
 
     <TextView
