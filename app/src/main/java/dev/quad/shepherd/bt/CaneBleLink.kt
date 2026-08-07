@@ -46,13 +46,16 @@ sealed interface CaneLinkState {
 data class CaneReading(val mm: Int?, val present: Boolean)
 
 /**
- * BLE central for the qhackcane "Distance Watch" board (Arduino UNO Q).
+ * BLE central for the qcane-wheel board (Arduino UNO Q).
  *
- * The board's ble-bridge advertises a Nordic UART Service peripheral named
- * "Distance Watch" (no pairing needed). We scan for the NUS service UUID,
- * connect, subscribe to TX notifications and reassemble newline-terminated
- * JSON lines like {"mm":842,"p":0}. Writes to RX carry UTF-8 text; a plain
- * number sets the cane's presence threshold in mm.
+ * The board's host daemon (`board/qcane-wheel/host/qcane_btd.py`, systemd
+ * user service `qcane-btd`) advertises the QCane GATT service — advertised
+ * name "QCane", no pairing needed. We scan by the service UUID (the
+ * constants below; NUS_* names are historical, this is not the Nordic
+ * UART service), connect, subscribe to notifications and reassemble
+ * newline-terminated JSON lines like {"mm":842,"p":0}. Writes carry UTF-8
+ * text: motor letters, or a plain number to set the cane's presence
+ * threshold in mm.
  *
  * [start] keeps the link alive: a watchdog rescans a few seconds after any
  * drop, and quietly waits for Bluetooth/permissions when they're missing.
