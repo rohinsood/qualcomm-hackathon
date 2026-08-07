@@ -293,18 +293,22 @@ class Bridge:
         """BlueZ does not persist Discoverable across reboots (main.conf has no
         such key), so re-apply it here — the bridge owns the adapter's public
         presence, and this runs on every start. Timeouts are zeroed so the board
-        never silently drops out of scan results."""
+        never silently drops out of scan results. The adapter Alias is pinned to
+        the advertised name too: it is what classic discovery and the GAP name
+        show, and a stale one (e.g. the old "QCane-Wheel") would leave the board
+        discoverable under the wrong name."""
         try:
             props = dbus.Interface(
                 self.bus.get_object(BLUEZ, self.adapter_path), PROP_IFACE
             )
+            props.Set(ADAPTER_IFACE, "Alias", dbus.String(LOCAL_NAME))
             props.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))
             props.Set(ADAPTER_IFACE, "PairableTimeout", dbus.UInt32(0))
             props.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
             props.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
-            log("adapter discoverable + pairable (no timeout)")
+            log(f"adapter alias '{LOCAL_NAME}', discoverable + pairable (no timeout)")
         except dbus.exceptions.DBusException as e:
-            log(f"could not set adapter discoverable: {e}")
+            log(f"could not set adapter alias/discoverable: {e}")
 
     def register(self):
         self._ensure_discoverable()
