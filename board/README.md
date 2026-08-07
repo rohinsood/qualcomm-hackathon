@@ -1,59 +1,76 @@
-# qhackcane
+# Cane board (Arduino UNO Q)
 
-Arduino UNO Q project: **Distance Watch** — a live web dashboard **and BLE
-phone link** for the **Modulino Distance** time-of-flight sensor
-(VL53L4CD/VL53L4ED on the Qwiic connector).
+One app runs the whole cane: **`distance-watch/`** — phone-steered wheel,
+obstacle haptics, LED-matrix status, and a live web dashboard. This is the
+merged v3 firmware (wheel + three Modulinos + dashboard) carried onto the
+qhackGPS/qhackcane pairing: the phone side here is **qhackGPS** (repo root),
+talking over the Nordic UART bridge.
 
-- Big **red lamp** on the page while an object is closer than the presence
-  threshold (default 300 mm).
-- Live **distance readout** (mm / cm) plus the raw data the sensor returns:
-  last reading, reading count, update rate, reading age, sensor status.
-- **Two-way Bluetooth**: a phone receives live distance + obstruction
-  notifications and can write back (set the threshold, or send a message that
-  appears on the web page).
+- **Wheel**: spins left/right on phone command or the dashboard buttons
+  (dashboard always drives full scale). The 13×8 LED matrix mirrors the
+  motion.
+- **Vibro buzz** (250 ms pulse every 500 ms) while an object is closer than
+  the presence threshold (default 300 mm) — haptic obstacle alert.
+- **QCane Link dashboard** (port 7000): per-Modulino cards — distance
+  readings (mm/cm, rate, age), motor telemetry with **live graphs** of
+  sensed current (mA) and applied voltage (duty × VM, VM = 5 V), vibro
+  state, Bluetooth links, rolling event log — plus manual spin/stop/buzz
+  and clear-graphs buttons.
+- **Failsafe**: the Linux side re-sends the desired state 4×/s; if that
+  stream stops for 2 s, the sketch stops the wheel and vibro on its own.
+
+## Hardware
+
+Modulinos daisy-chained on the Qwiic connector (`Wire1`), in wiring order:
+
+```
+UNO Q ──▶ Modulino Motors ──▶ Modulino Vibro ──▶ Modulino Distance
+```
+
+Chain order does not matter on I²C — each node answers on its own address.
+
+**Motor wiring (important):** the motor sits across screw terminals
+**`1A` + `2A`** — one half-bridge from **channel A** and one from
+**channel B**, not a single channel's own pair, so the sketch drives the two
+channels in opposite phase (`driveMotor()`); both channels show current
+while it spins. `motor_selftest` re-measures every drive option if the
+wiring is ever in doubt. Motor power goes into the `VM` + `GND` screw
+terminals (5 V here); the yellow VM LED confirms power.
 
 ## How it works
 
 ```
-Modulino Distance ──I²C (Wire1)──▶ MCU sketch ──Bridge.notify──▶ Python ──WebSocket──▶ browser
-                                                                   ▲
-                                                     HTTP :7000 (poll + POST)
-                                                                   ▼
-phone (BLE central) ◀──Nordic UART Service──▶ ble-bridge/ble_bridge.py (host daemon)
+Modulino Distance ──I²C──▶ MCU sketch ──"distance_reading"──▶ Python ──WebSocket──▶ dashboard
+Modulino Motors + Vibro ◀──I²C── MCU sketch ◀──"set_wheel"/"set_vibro" heartbeat── Python
+                                                                 ▲
+                                                   HTTP :7000 (poll + POST)
+                                                                 ▼
+qhackGPS phone (BLE central) ◀──Nordic UART──▶ ble-bridge/ble_bridge.py (host daemon)
 ```
 
-- `distance-watch/sketch/sketch.ino` — reads the sensor (~50 Hz) and streams
-  each valid measurement with `Bridge.notify("distance_reading", mm)`, plus a
-  1 Hz `sensor_status` heartbeat so the UI can tell *no object* apart from
-  *no sensor*. The sensor reports nothing at all when no target is in range.
-- `distance-watch/python/main.py` — receives readings, tracks presence
-  (`mm <= 300`), expires stale readings after 1 s, and pushes state snapshots
-  to browsers over the `web_ui` brick (WebSocket event `distance`, plus REST
-  `GET /api/state`).
-- `distance-watch/assets/` — the dashboard (vanilla HTML/CSS/JS, served on
-  port 7000).
+- `distance-watch/sketch/sketch.ino` — owns all three Modulinos: streams
+  each valid ToF measurement, applies wheel commands (opposite-phase drive +
+  matrix animation + `wheel_applied` acks), pulses the vibro, sends 2 Hz
+  `motor_telemetry` and 1 Hz status heartbeats, and runs the motor
+  self-test on request.
+- `distance-watch/python/main.py` — the policy layer: presence
+  (`mm <= threshold`) drives the vibro; the last wheel command (phone or
+  dashboard, last writer wins) drives the motor; both re-sent 4×/s as the
+  failsafe heartbeat. Serves the dashboard, REST API, event log, and graph
+  history.
+- `ble-bridge/` — host-side Nordic UART bridge + auto-accept pairing agent
+  (systemd user services). The phone's texts steer the wheel (table below)
+  and its 5 s heartbeat feeds the dashboard's Bluetooth card.
+- `distance-watch/host/qcane_btd.py` — optional QCane GATT/SPP daemon from
+  the v3 wheel board (speeds 1–5, `left`/`right 4`/JSON). Not needed for
+  qhackGPS; the app's socket client simply reports "not running" until the
+  daemon is started. Contract: `distance-watch/README.md`.
 
-## Run
+## Bluetooth (qhackGPS phone link)
 
-```bash
-arduino-app-cli app start /home/arduino/dev/qhackcane/distance-watch
-arduino-app-cli app logs  /home/arduino/dev/qhackcane/distance-watch --follow
-```
-
-Then open `http://<board-ip>:7000`. Quick check without a browser:
-
-```bash
-curl -s http://localhost:7000/api/state
-```
-
-MCU serial debug (sensor init status): `arduino-app-cli monitor`.
-
-## Bluetooth (phone link)
-
-`ble-bridge/ble_bridge.py` runs **on the Linux host** (the app container has
-no D-Bus access) as a systemd *user* service. It exposes a standard
-**Nordic UART Service** BLE peripheral via BlueZ and shuttles data to/from the
-app over `localhost:7000`.
+`ble-bridge/ble_bridge.py` runs **on the Linux host** as a systemd *user*
+service and exposes a standard **Nordic UART Service** peripheral named
+**"Distance Watch"**:
 
 | | UUID |
 |---|---|
@@ -61,54 +78,62 @@ app over `localhost:7000`.
 | RX — phone **writes** | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
 | TX — board **notifies** | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
 
-**Board → phone** (subscribe to TX): `{"mm":123,"p":1}` — latest distance and
-whether an obstruction is inside the threshold; `"mm":null` when nothing is in
-range. Sent ~2×/s while values change, instantly when presence flips.
+**Board → phone** (subscribe to TX): `{"mm":123,"p":1}` — latest distance
+and whether an obstruction is inside the threshold; `"mm":null` when nothing
+is in range.
 
 **Phone → board** (write UTF-8 text to RX):
 
 | you send | effect |
 |---|---|
-| a number, e.g. `250` | sets the presence threshold (mm); ack `{"thr":250}` |
-| `get` | full state snapshot as JSON |
-| any other text | shown on the web page as "Message from phone" |
+| a number, e.g. `1200` | sets the presence threshold (mm); ack `{"thr":1200}` |
+| `get` | state snapshot as JSON |
+| text containing `left` / `right` | spins the wheel that way at full speed (e.g. `AVOID LEFT`) |
+| text containing `clear` / `stop` | stops the wheel |
+| any other text | shown on the dashboard as "message from phone" |
 
-**Try it from a phone**: install *nRF Connect* (or *Serial Bluetooth
-Terminal* in "Bluetooth LE" mode), scan, connect to **“Distance Watch”**,
-enable notifications on TX, write text to RX. No pairing required (the link
-is intentionally open — demo hardware).
+**qhackGPS** (repo root) is the primary client: it auto-discovers "Distance
+Watch", subscribes to the distance stream, widens the threshold to 1200 mm
+on connect, and mirrors its avoidance state back as `AVOID LEFT` /
+`AVOID RIGHT` / `CLEAR` — which now physically steers the wheel. The wheel
+also stops when the phone disconnects or the bridge dies.
 
-### qhackGPS companion app
-
-The [qhackGPS](https://github.com/iujab/qhackGPS) Android navigator is the
-primary client: it auto-discovers this peripheral, subscribes to TX, and on
-connect writes `1200` to widen the presence threshold to walking range. While
-an object is inside the threshold the app shows the live distance, steers the
-user around it (left/right), and mirrors that state back here — you'll see
-`AVOID LEFT` / `AVOID RIGHT` / `CLEAR` as the "message from phone" on the
-dashboard. On subscribe, the bridge now pushes the current state immediately
-(no need to wait for the next change) — restart the service after pulling
-that change: `systemctl --user restart qhack-ble-bridge`.
-
-**Service management** (installed, enabled, and linger is on, so it starts at
-boot):
+Service install (first time on a board; fix the path in the unit to match
+where this repo lives):
 
 ```bash
-systemctl --user status  qhack-ble-bridge   # logs: journalctl --user -u qhack-ble-bridge -f
-systemctl --user restart qhack-ble-bridge   # after editing ble_bridge.py
-# install from scratch:
-cp ble-bridge/qhack-ble-bridge.service ~/.config/systemd/user/ && \
-  systemctl --user daemon-reload && systemctl --user enable --now qhack-ble-bridge
+sed "s|/home/arduino/dev/qhackcane/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-ble-bridge.service > ~/.config/systemd/user/qhack-ble-bridge.service
+sed "s|/home/arduino/dev/qhackcane/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-bt-agent.service  > ~/.config/systemd/user/qhack-bt-agent.service
+systemctl --user daemon-reload && systemctl --user enable --now qhack-ble-bridge qhack-bt-agent
 ```
 
-The web page's raw-data table shows the Bluetooth state (advertising /
-connected + device name), fed by a 5 s heartbeat from the bridge
-(`POST /api/bt`); if the bridge stops, the app shows Bluetooth as off within
-12 s.
+(Needs `python3-dbus` + PyGObject: `sudo apt-get install -y python3-dbus`.)
+
+## Run
+
+```bash
+arduino-app-cli app start <repo>/board/distance-watch
+arduino-app-cli app logs  <repo>/board/distance-watch --follow
+```
+
+Then open `http://<board-ip>:7000`.
+
+## API quick reference (dashboard buttons use these)
+
+```bash
+curl -s localhost:7000/api/state                                                            # everything
+curl -X POST localhost:7000/api/motor  -H 'Content-Type: application/json' -d '{"dir":-1}'  # -1 left, 0 stop, 1 right (full speed)
+curl -X POST localhost:7000/api/vibro  -H 'Content-Type: application/json' -d '{"ms":600}'  # one-shot buzz, 50–3000 ms
+curl -X POST localhost:7000/api/threshold -H 'Content-Type: application/json' -d '{"mm":250}'
+curl -X POST localhost:7000/api/graphs/clear                                                # wipe the motor graphs
+```
 
 ## Tuning
 
-Presence threshold and staleness live at the top of
-`distance-watch/python/main.py` (`PRESENCE_MAX_MM`, `STALE_AFTER_S`) — and the
-threshold can be changed live from the phone (write a number) or via
-`curl -X POST localhost:7000/api/threshold -H 'Content-Type: application/json' -d '{"mm":250}'`.
+- `distance-watch/sketch/sketch.ino`: `SPEED_PERCENT` (1–5 speed table,
+  {30,45,60,80,100} %), `VIBRO_PULSE_MS` / `VIBRO_PERIOD_MS` (haptic
+  rhythm), `COMMAND_TIMEOUT_MS` (failsafe, 2 s).
+- `distance-watch/python/main.py`: `PRESENCE_MAX_MM` (threshold, also
+  settable live from the phone or `/api/threshold`), `MOTOR_VM_V` (5 V —
+  scales the dashboard voltage graph), `DASHBOARD_SPEED` (buttons, 5 =
+  full).

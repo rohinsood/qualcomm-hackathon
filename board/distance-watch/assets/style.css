@@ -26,7 +26,7 @@ main {
   padding: 24px 20px 48px;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
 }
 
 header {
@@ -127,39 +127,15 @@ h1 { font-size: 20px; font-weight: 600; }
   margin-top: 4px;
 }
 
-/* Message from phone */
-.hidden { display: none; }
-
-.phone {
-  background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line));
-  border-radius: 12px;
-  padding: 14px 18px;
-}
-
-.phone-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ok);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-}
-
-.phone-msg {
-  font-size: 16px;
-  overflow-wrap: anywhere;
-}
-
-/* Raw data */
-.raw {
+/* Module cards */
+.card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 16px 18px;
 }
 
-.raw h2 {
+.card h2 {
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
@@ -168,22 +144,38 @@ h1 { font-size: 20px; font-weight: 600; }
   margin-bottom: 10px;
 }
 
-.raw table { width: 100%; border-collapse: collapse; }
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.card-head h2 { margin-bottom: 0; }
 
-.raw th, .raw td {
+.btn-mini {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.card table { width: 100%; border-collapse: collapse; }
+
+.card th, .card td {
   padding: 7px 0;
   border-bottom: 1px solid var(--line);
   font-size: 14px;
 }
-.raw tr:last-child th, .raw tr:last-child td { border-bottom: none; }
+.card tr:last-child th, .card tr:last-child td { border-bottom: none; }
 
-.raw th {
+.card th {
   text-align: left;
   font-weight: 500;
   color: var(--muted);
 }
 
-.raw td {
+.card td {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -194,3 +186,161 @@ h1 { font-size: 20px; font-weight: 600; }
   color: var(--muted);
   line-height: 1.5;
 }
+
+/* Status badges: never color alone — the word carries the state too */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.badge.ok   { color: var(--ok); }
+.badge.warn { color: var(--warn); }
+
+/* Manual controls */
+.btn-row {
+  display: flex;
+  gap: 10px;
+}
+.btn-row + .btn-row { margin-top: 10px; }
+
+.btn {
+  flex: 1;
+  padding: 12px 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.btn:hover { border-color: var(--muted); }
+
+.btn:focus-visible {
+  outline: 2px solid var(--ok);
+  outline-offset: 2px;
+}
+
+.btn:active { background: var(--line); }
+
+.btn.dir[aria-pressed="true"] {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg));
+}
+
+/* Motor telemetry strip charts */
+.chart { margin-top: 14px; }
+
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.chart-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.chart-now {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chart-body { position: relative; }
+
+.chart-body svg {
+  display: block;
+  width: 100%;
+  height: 110px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.chart-y {
+  position: absolute;
+  right: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.chart-y-top { top: 4px; }
+.chart-y-bottom { bottom: 4px; }
+
+.grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.grid-zero {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.line-ma {
+  fill: none;
+  stroke: var(--ok);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.line-duty {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Event log */
+.events {
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.events li {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.events li:last-child { border-bottom: none; }
+
+.ev-t {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ev-msg { overflow-wrap: anywhere; }
+
+.ev-empty { color: var(--muted); }

@@ -1,3 +1,14 @@
+# qhackfinal — combined branch
+
+Both halves of the qhack system in one tree:
+
+- **Repo root — qhackGPS**: the Android compass navigator (docs below).
+- **[`board/`](board/README.md) — the cane board**: the Arduino UNO Q app
+  (wheel + vibro + distance + web dashboard, i.e. the merged v3 firmware)
+  plus the host-side Nordic UART bridge that qhackGPS talks to.
+
+---
+
 # qhackGPS
 
 Compass-guided navigation component for an assured-navigation system. Point the

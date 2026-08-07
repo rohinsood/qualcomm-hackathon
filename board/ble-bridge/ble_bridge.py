@@ -14,7 +14,10 @@ Board -> phone (TX notify, ~2 Hz + instantly on presence change):
 Phone -> board (RX write, UTF-8 text):
   <number>   set the presence threshold in mm (e.g. "250"), ack {"thr":250}
   get        full state snapshot as JSON
-  <text>     anything else is shown on the web UI as "message from phone"
+  <text>     anything else is shown on the web UI as "message from phone";
+             text containing "left"/"right" spins the Modulino steering motor
+             that way, "clear"/"stop" stops it (so qhackGPS's "AVOID LEFT" /
+             "AVOID RIGHT" / "CLEAR" steer the motor as a side effect)
 
 Requires only python3-dbus + PyGObject (both preinstalled on the board).
 """
@@ -489,7 +492,8 @@ class Bridge:
             if state is None:
                 self.tx.send_line('{"err":"app unreachable"}')
             else:
-                keep = ("mm", "present", "threshold_mm", "sensor_ok", "hz", "phone_msg")
+                keep = ("mm", "present", "threshold_mm", "sensor_ok", "hz",
+                        "phone_msg", "motor", "motors_ok", "vibro_ok")
                 self.tx.send_line(json.dumps(
                     {k: state.get(k) for k in keep}, separators=(",", ":")
                 ))
