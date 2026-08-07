@@ -65,11 +65,39 @@
           <tr><th scope="row">applied by sketch</th><td id="mot-applied">stop</td></tr>
           <tr><th scope="row">current &middot; channel A (1A/2A)</th><td id="mot-ma-a">&mdash;</td></tr>
           <tr><th scope="row">current &middot; channel B</th><td id="mot-ma-b">&mdash;</td></tr>
+          <tr><th scope="row">applied voltage (duty)</th><td id="mot-duty">&mdash;</td></tr>
           <tr><th scope="row">driver busy</th><td id="mot-busy">&mdash;</td></tr>
         </tbody>
       </table>
+
+      <div class="chart" id="chart-ma-wrap">
+        <div class="chart-head">
+          <span class="chart-title">motor current &middot; channel A &middot; last 2 min</span>
+          <span id="chart-ma-now" class="chart-now">&mdash;</span>
+        </div>
+        <div class="chart-body">
+          <svg id="chart-ma" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Motor current history, channel A, milliamps"></svg>
+          <span id="chart-ma-max" class="chart-y chart-y-top"></span>
+          <span id="chart-ma-min" class="chart-y chart-y-bottom"></span>
+        </div>
+      </div>
+
+      <div class="chart" id="chart-duty-wrap">
+        <div class="chart-head">
+          <span class="chart-title">applied voltage &middot; signed duty, % of VM &middot; last 2 min</span>
+          <span id="chart-duty-now" class="chart-now">&mdash;</span>
+        </div>
+        <div class="chart-body">
+          <svg id="chart-duty" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Applied motor voltage history as signed duty percentage of VM"></svg>
+          <span id="chart-duty-max" class="chart-y chart-y-top"></span>
+          <span id="chart-duty-min" class="chart-y chart-y-bottom"></span>
+        </div>
+      </div>
+
       <p class="hint">The module firmware reports current sense only &mdash; VM voltage is not
-        readable over I&sup2;C; the yellow VM LED on the module means motor power is present.</p>
+        readable over I&sup2;C, so the voltage graph shows the applied H-bridge output as
+        signed PWM duty (average output = duty &times; VM). Yellow VM LED on the module =
+        motor power present.</p>
     </section>
 
     <section class="card">

@@ -19,6 +19,7 @@ const motCmd = $('mot-cmd');
 const motApplied = $('mot-applied');
 const motMaA = $('mot-ma-a');
 const motMaB = $('mot-ma-b');
+const motDuty = $('mot-duty');
 const motBusy = $('mot-busy');
 
 const vibStatus = $('vib-status');
@@ -44,6 +45,10 @@ function fmtMa(ma) {
   return ma == null ? '—' : `${ma.toFixed(1)} mA`;
 }
 
+function fmtDuty(duty) {
+  return duty == null ? '—' : `${duty > 0 ? '+' : ''}${duty} % VM`;
+}
+
 function motorWord(dir) {
   return dir < 0 ? 'left' : (dir > 0 ? 'right' : 'stop');
 }
@@ -51,6 +56,107 @@ function motorWord(dir) {
 function badge(el, ok, okText, badText) {
   el.innerHTML = `<span class="badge ${ok ? 'ok' : 'warn'}">${ok ? okText : badText}</span>`;
 }
+
+/* ---- motor telemetry strip charts (current mA, applied duty %) ---------- */
+
+const CHART_W = 520;
+const CHART_H = 110;
+const CHART_PAD = 4;
+const HIST_MAX = 240;   // matches the server-side buffer (2 Hz x 2 min)
+const WINDOW_S = 120;
+
+const history = [];     // [{t, ma, duty}] — seeded from the server, then live
+let lastMotorT = null;
+let seeded = false;
+
+const charts = {
+  ma: {
+    svg: $('chart-ma'), now: $('chart-ma-now'),
+    yMax: $('chart-ma-max'), yMin: $('chart-ma-min'),
+    value: (p) => p.ma, fmt: fmtMa, cls: 'line-ma',
+    scale: (data) => ({ min: 0, max: niceCeil(Math.max(50, ...data.map((p) => p.ma))) }),
+  },
+  duty: {
+    svg: $('chart-duty'), now: $('chart-duty-now'),
+    yMax: $('chart-duty-max'), yMin: $('chart-duty-min'),
+    value: (p) => p.duty, fmt: fmtDuty, cls: 'line-duty',
+    scale: () => ({ min: -100, max: 100, zero: true }),
+  },
+};
+
+function niceCeil(v) {
+  const steps = [50, 100, 200, 500, 1000, 2000, 5000];
+  for (const s of steps) if (v <= s) return s;
+  return Math.ceil(v / 5000) * 5000;
+}
+
+function pushSample(t, ma, duty) {
+  if (ma == null) return;
+  history.push({ t, ma, duty: duty || 0 });
+  while (history.length > HIST_MAX) history.shift();
+}
+
+function drawChart(c) {
+  const tNow = history.length ? history[history.length - 1].t : 0;
+  const t0 = tNow - WINDOW_S;
+  const data = history.filter((p) => p.t >= t0);
+  const { min, max, zero } = c.scale(data.length ? data : [{ ma: 0, duty: 0, t: 0 }]);
+
+  const x = (t) => CHART_PAD + (CHART_W - 2 * CHART_PAD) * (t - t0) / WINDOW_S;
+  const y = (v) => {
+    const f = (v - min) / (max - min);
+    return CHART_H - CHART_PAD - (CHART_H - 2 * CHART_PAD) * f;
+  };
+
+  let parts = '';
+  for (const gv of [min, (min + max) / 2, max]) {
+    parts += `<line class="grid" x1="0" x2="${CHART_W}" y1="${y(gv).toFixed(1)}" y2="${y(gv).toFixed(1)}"/>`;
+  }
+  if (zero) {
+    parts += `<line class="grid-zero" x1="0" x2="${CHART_W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`;
+  }
+  if (data.length) {
+    const pts = data.map((p) => `${x(p.t).toFixed(1)},${y(c.value(p)).toFixed(1)}`).join(' ');
+    parts += `<polyline class="${c.cls}" points="${pts}"/>`;
+  }
+  c.svg.innerHTML = parts;
+  c.yMax.textContent = c === charts.duty ? `+${max}` : `${max}`;
+  c.yMin.textContent = `${min}`;
+  c.data = data;
+  c.t0 = t0;
+  if (!c.hovering) {
+    c.now.textContent = data.length ? c.fmt(c.value(data[data.length - 1])) : '—';
+  }
+}
+
+function drawCharts() {
+  drawChart(charts.ma);
+  drawChart(charts.duty);
+}
+
+function attachHover(c) {
+  c.svg.addEventListener('mousemove', (ev) => {
+    if (!c.data || !c.data.length) return;
+    const rect = c.svg.getBoundingClientRect();
+    const tAt = c.t0 + ((ev.clientX - rect.left) / rect.width) * WINDOW_S;
+    let best = c.data[0];
+    for (const p of c.data) {
+      if (Math.abs(p.t - tAt) < Math.abs(best.t - tAt)) best = p;
+    }
+    c.hovering = true;
+    const ago = Math.max(0, (c.data[c.data.length - 1].t - best.t)).toFixed(0);
+    c.now.textContent = `${c.fmt(c.value(best))} · ${ago}s ago`;
+  });
+  c.svg.addEventListener('mouseleave', () => {
+    c.hovering = false;
+    c.now.textContent = c.data && c.data.length ? c.fmt(c.value(c.data[c.data.length - 1])) : '—';
+  });
+}
+
+attachHover(charts.ma);
+attachHover(charts.duty);
+
+/* ------------------------------------------------------------------------ */
 
 function render(d) {
   const hasReading = d.mm != null;
@@ -82,10 +188,25 @@ function render(d) {
   motApplied.textContent = motorWord(d.motor_applied);
   motMaA.textContent = fmtMa(d.motor_ma_a);
   motMaB.textContent = fmtMa(d.motor_ma_b);
+  motDuty.textContent = fmtDuty(d.motor_duty_pct);
   motBusy.textContent = d.motor_busy ? 'yes' : 'no';
   btnLeft.setAttribute('aria-pressed', String(d.motor === -1));
   btnStop.setAttribute('aria-pressed', String(d.motor === 0));
   btnRight.setAttribute('aria-pressed', String(d.motor === 1));
+
+  // Graphs: seed once from server history, then append fresh samples
+  if (!seeded && Array.isArray(d.motor_history)) {
+    for (const p of d.motor_history) pushSample(p.t, p.ma, p.duty);
+    if (d.motor_history.length) {
+      lastMotorT = d.motor_history[d.motor_history.length - 1].t;
+    }
+    seeded = true;
+    drawCharts();
+  } else if (d.motor_t != null && d.motor_t !== lastMotorT) {
+    lastMotorT = d.motor_t;
+    pushSample(d.motor_t, d.motor_ma_a, d.motor_duty_pct);
+    drawCharts();
+  }
 
   // Vibro card
   badge(vibStatus, !!d.vibro_ok, 'detected', 'not found');
@@ -140,6 +261,11 @@ ui.on_connect(() => {
 ui.on_disconnect(() => {
   conn.textContent = 'Offline';
   conn.className = 'pill bad';
+  // Reseed the graphs from server history on the next connect — the app may
+  // have restarted while we were away.
+  seeded = false;
+  history.length = 0;
+  lastMotorT = null;
 });
 
 ui.on_message('distance', render);
