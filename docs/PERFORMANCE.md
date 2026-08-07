@@ -161,13 +161,14 @@ MiDaS w8a8 row above shows, quantization needs the right consumer to pay off.
 
 ## What we have not measured
 
-Stated plainly, because these are the numbers a reader will most want:
+The cane is built, assembled, and has been walked with — but these numbers have
+not been captured yet, and they are the ones a reader will most want:
 
-- **End-to-end reaction time**, obstacle entering frame → wheel torque. Needs the
-  mechanical assembly (see [`../Hardware/Assembly Instructions.md`](../Hardware/Assembly%20Instructions.md),
-  Stage 2), and it must include mechanical inertia, which no bench number here
-  captures.
-- **Battery life** under sustained motor load.
+- **End-to-end reaction time**, obstacle entering frame → wheel torque. The
+  assembly exists to measure it on; what remains is instrumenting the capture. It
+  must include mechanical inertia, which no bench number here accounts for.
+- **Battery life** under sustained motor load, phone charging from the same bank.
 - **Steering accuracy or walking-speed effect.** The figures in the top-level
   README are the *research paper's* results for *their* device. This
-  implementation has not been evaluated with users.
+  implementation has not been evaluated with users with impaired vision — informal
+  walking by the team is not that.

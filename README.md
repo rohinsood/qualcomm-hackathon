@@ -375,9 +375,12 @@ printed omni wheel:
 UNO Q ──▶ Modulino Motors ──▶ Modulino Vibro ──▶ Modulino Distance
 ```
 
-**Verified working:** UNO Q, all three Modulinos, wheel drive, distance
-streaming, haptics, the dashboard, and the full phone→board BLE path — all
-reproducible with the parts loose on a desk.
+**Built and tested:** all six parts printed and fit-checked, the UNO Q and three
+Modulinos wired into the cane, wheel drive, distance streaming, haptics, the
+dashboard, and the full phone→board BLE path all verified working — and the
+assembled cane has been walked with. The electronics also come up standalone on a
+desk, which is the right way to bring them up before printing.
+
 
 ### Printed parts
 
@@ -398,8 +401,10 @@ Print settings, materials, and the roller-clearance caveat:
 — the source of truth for modifications. The committed STLs are exports of it, so
 the repo stands alone without an Onshape account.
 
-> **Not yet printed.** The models are complete and print-ready but have not been
-> printed and fit-checked. Expect a clearance iteration on the wheel.
+> **Built and walked with.** All six assemblies are printed and fit-checked on the
+> cane, the electronics are verified working, and the completed cane has been
+> walked with. Roller clearance on the print-in-place wheel is printer-dependent —
+> scale up 0.05 mm and reprint if yours fuse.
 
 ### Cost
 
@@ -640,14 +645,16 @@ behavior: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md).
 - [x] Neural on-device TTS; on-device speech recognition; OCR on request
 - [x] Board dashboard with live motor current and voltage telemetry
 - [x] 2B companion model on Hexagon (built, disabled by default)
+- [x] Spoken screen-thirds guidance as an independent fallback path
 - [x] Complete CAD for all six printed assemblies
+- [x] Cane printed, assembled, and walked with
 
 **In progress**
-- [ ] Print and fit-check the parts; iterate roller clearance
 - [ ] End-to-end reaction-time measurement including mechanical inertia
+- [ ] Battery life under sustained motor load
 - [ ] Fix the two behavioral defects in `KNOWN_ISSUES.md`
 - [ ] Enable the companion model once thermal headroom is characterized
-- [ ] Weigh the assembly and assess hand fatigue over a long walk
+- [ ] Assess hand fatigue over a long walk
 
 **Future**
 - [ ] Moving-obstacle prediction
@@ -678,8 +685,9 @@ Contributions welcome, particularly:
 
 - **Accessibility testing** — feedback from users with impaired vision matters
   more than any other contribution here, and we have none yet.
-- **Printing and fit-checking** — the parts are print-ready but unprinted. Report
-  what you had to adjust.
+- **Reproducing the build** — print the parts and assemble your own. The design
+  is tested on one cane; a second build on a different printer is the fastest way
+  to surface clearance and tolerance issues. Report what you had to adjust.
 - **Perception** — moving-obstacle prediction, better indoor segmentation,
   robustness to glass and harsh shadows.
 - **Board offload** — a QNN path for the Dragonwing's Adreno GPU.

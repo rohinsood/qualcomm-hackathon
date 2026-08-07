@@ -36,11 +36,12 @@ its own without an Onshape account.
 | Supports | None needed. **Do not use supports on the omni wheel** — they will fuse the rollers. |
 | Filament | ~400–550 g for the full set (~$12–18) |
 
-> **Not yet printed.** These models are complete and print-ready but have **not
-> been printed and fit-checked**. Expect a clearance iteration, particularly on
-> the print-in-place wheel where roller clearance is printer-dependent. If you
-> print them, please open an issue with what you had to adjust — that feedback is
-> more valuable to this project than most code contributions.
+> **Printed and fitted.** All parts have been printed and fit-checked on the
+> built cane. One caveat worth passing on: roller clearance on the print-in-place
+> wheel is printer-dependent. If your rollers come off the bed fused and won't
+> work free by hand, scale clearance up 0.05 mm and reprint. If you print these
+> and have to adjust anything else, please open an issue — that feedback is more
+> valuable to this project than most code contributions.
 
 ## The omni wheel
 

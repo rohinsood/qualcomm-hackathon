@@ -1,8 +1,9 @@
 # Assembly Instructions
 
-Three stages. **Stage 1 (electronics) is verified working** and needs no
-mechanical assembly at all — do it first on a desk. Stages 2 and 3 print and
-assemble the cane.
+Three stages, all of which have been carried through on the built cane. **Stage 1
+(electronics) is verified working** and needs no mechanical assembly at all — do
+it first on a desk, before you print anything. Stages 2 and 3 print and assemble
+the cane. The completed cane has been walked with.
 
 Parts and costs: [`Bill of Materials.md`](Bill%20of%20Materials.md)
 
@@ -122,9 +123,10 @@ mount, phone mount) — it survives being dropped and flexed better than PLA, an
 cane gets both. PLA is fine for the covers. 0.2 mm layers, 4 perimeters, 25–30%
 infill on structural parts.
 
-> **These parts have not yet been printed and fit-checked.** Expect a clearance
-> iteration, especially on the wheel. If you print them, please report what you
-> had to change.
+> **These parts have been printed and fit-checked** on the built cane. The one
+> thing to watch is the print-in-place wheel: roller clearance is
+> printer-dependent, so if yours come off the bed fused, work them free by hand
+> or scale clearance up 0.05 mm and reprint.
 
 ### The print-in-place omni wheel
 

@@ -2,8 +2,9 @@
 
 Total build cost: **~$196** excluding the phone and the 3D printer.
 
-Everything here is either verified working on the bench or modeled and
-print-ready. Where a part is designed but not yet printed, it says so.
+Every part below is in the built cane. All six printed assemblies have been
+printed and fit-checked, the electronics are verified working, and the assembled
+cane has been walked with.
 
 For context on why this number matters: commercial smart canes run
 $800–$1,150, AI wearables $2,000–$5,000, and a guide dog around $50,000 with a
@@ -14,7 +15,7 @@ is the point of the project, not a side effect.
 
 ---
 
-## Electronics — verified working
+## Electronics — verified working in the built cane
 
 | # | Part | Qty | Unit | Notes |
 |---|---|---|---|---|
@@ -41,7 +42,7 @@ should work; QNN degrades gracefully if the config doesn't match.
 
 ---
 
-## 3D-printed parts — designed, print-ready
+## 3D-printed parts — printed and fitted
 
 All models are in [`CAD/`](CAD/) as STL, with renders. The editable source is a
 live Onshape document — [open it here](https://cad.onshape.com/documents/c0b905e8d1b94a52d9e9ca97/w/f6521fb190a4be4abaa604ca/e/e523a5a009f76747b4bb6591)
@@ -60,10 +61,10 @@ live Onshape document — [open it here](https://cad.onshape.com/documents/c0b90
 **Filament cost: ~$12–18** for the full set in PLA or PETG (roughly 400–550 g
 depending on infill). At a print-service rate, budget $60–90 instead.
 
-> **Print status.** The models are complete and print-ready, but this parts set
-> has **not yet been printed and fit-checked** on hardware. Expect to iterate on
-> clearances — particularly the print-in-place wheel, where roller clearance is
-> printer-dependent. Report what you find.
+> **Print status.** All parts have been **printed and fit-checked** on the built
+> cane. Note that roller clearance on the print-in-place wheel is
+> printer-dependent — if your rollers come off the bed fused and won't work free,
+> scale clearance up 0.05 mm and reprint.
 
 ### Omni wheel provenance
 
@@ -175,10 +176,15 @@ Choices made for the user rather than the demo:
 
 ## Next steps
 
-1. Print the full set and fit-check, particularly print-in-place roller clearance.
-2. Move the motor from bench supply to the PD trigger board and re-run
-   `--selftest` under load.
-3. Measure end-to-end steering latency with the wheel on a real shaft —
-   mechanical inertia is not captured by the bench numbers in
-   [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
-4. Weigh the assembly. Nothing above accounts for hand fatigue over a long walk.
+The cane is built and walked with. What remains is measurement and evaluation:
+
+1. Measure end-to-end steering latency on the assembled cane — obstacle entering
+   frame to wheel torque. Mechanical inertia is not captured by the bench numbers
+   in [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
+2. Characterize battery life under sustained motor load, with the phone charging
+   from the same bank.
+3. Weigh the assembly and assess hand fatigue over a long walk. Nothing in this
+   BOM accounts for that, and it is the kind of thing that only shows up past the
+   thirty-minute mark.
+4. Evaluate with users with impaired vision. Every other test is a proxy for this
+   one.
