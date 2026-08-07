@@ -18,7 +18,9 @@
  * Wiring: the motor sits across terminals 1A and 2A, which is one half-bridge
  * from channel A and one from channel B rather than a single channel's own
  * pair, so the two channels have to be driven in opposite phase — see
- * driveMotor(). "motor_selftest" re-measures every option if that ever needs
+ * stepMotor(). Commands ramp through a leaky integrator (tau = 0.45 s,
+ * Shepherd-style) instead of stepping; the failsafe stops hard, skipping the
+ * ramp. "motor_selftest" re-measures every drive option if that ever needs
  * checking again (streams "selftest_telemetry"; the periodic dashboard
  * stream is "motor_telemetry").
  */
@@ -40,13 +42,26 @@ static const uint8_t SPEED_PERCENT[5] = {30, 45, 60, 80, 100};
 // stops (app or bridge died), stop every output rather than run away.
 constexpr unsigned long COMMAND_TIMEOUT_MS = 2000;
 
-// Proximity alert rhythm: a VIBRO_PULSE_MS buzz every VIBRO_PERIOD_MS.
-constexpr unsigned long VIBRO_PULSE_MS = 250;
-constexpr unsigned long VIBRO_PERIOD_MS = 500;
+// Proximity haptics: the Linux side commands the pulse period with each
+// set_vibro (parking-sensor style — tighter rhythm as the obstacle closes);
+// period <= 0 means continuous buzz ("stop now" tier). The default only
+// applies until the first command arrives.
+constexpr int VIBRO_DEFAULT_PERIOD_MS = 500;
+// Continuous mode re-issues a self-terminating buzz before it expires, so a
+// wedged loop still cannot leave the vibro latched on.
+constexpr unsigned long VIBRO_CONT_ON_MS = 600;
+constexpr unsigned long VIBRO_CONT_REFRESH_MS = 400;
 
 constexpr unsigned long MODULE_RETRY_MS = 3000;
 constexpr unsigned long TELEMETRY_MS = 500;
 constexpr unsigned long DISTANCE_POLL_MS = 20;
+
+// Leaky-integrator drive (Shepherd's ESP32 pattern): the wheel ramps toward
+// the commanded target instead of stepping to it. dS/dt = target - S/tau,
+// output = S/tau — so a reversal glides through zero and reaching full scale
+// from rest takes ~3*tau (~1.4 s). The failsafe bypasses the ramp (hard stop).
+constexpr unsigned long MOTOR_UPDATE_MS = 25;
+constexpr float MOTOR_TAU_S = 0.45f;
 
 static const uint8_t MATRIX_W = 13;
 static const uint8_t MATRIX_H = 8;
@@ -77,6 +92,7 @@ volatile int wheelSpeed = 5;  // 1 (slowest) .. 5 (full scale)
 volatile bool dirty = true;
 volatile int selftestPercent = 0;   // > 0 asks loop() to run the self-test
 volatile bool desiredVibro = false;
+volatile int vibroPeriodMs = VIBRO_DEFAULT_PERIOD_MS;  // commanded rhythm; <= 0 = continuous
 volatile int pendingPulseMs = 0;    // one-shot manual buzz from the dashboard
 volatile unsigned long lastCommandMs = 0;
 
@@ -88,6 +104,13 @@ static unsigned long lastStep = 0;
 // Seeded to an impossible value so the current state is reported once at boot.
 static int appliedDir = -99;
 static int appliedSpeed = -99;
+
+// Leaky-integrator drive state.
+static float motorState = 0.0f;       // integrator state (raw-speed * seconds)
+static int16_t lastWrittenRaw = 0;    // last raw value written to the module
+static bool motorSettled = true;      // final stop write already done
+static bool failsafeLatched = false;  // hard stop on timeout issued once
+static unsigned long lastMotorStepMs = 0;
 
 static bool vibroActive = false;
 static unsigned long lastPulseMs = 0;
@@ -156,30 +179,70 @@ static int16_t rawForSpeed(int speed) {
   return (int16_t)((int32_t)percent * ModulinoMotors::MAX_SPEED / 100);
 }
 
-// Signed duty percentage the H-bridge applies for the current wheel state.
+// Signed duty percentage the H-bridge is applying RIGHT NOW — the live
+// integrator output, not the command target, so the dashboard voltage graph
+// shows the actual ramps.
 static int appliedDutyPct() {
-  if (appliedDir == -99 || appliedDir == 0 || appliedSpeed < 1) {
-    return 0;
-  }
-  return appliedDir * SPEED_PERCENT[constrain(appliedSpeed, 1, 5) - 1];
+  return (int)lroundf(100.0f * (float)lastWrittenRaw
+                      / (float)ModulinoMotors::MAX_SPEED);
 }
 
-// Drive the wheel. Called from loop() once per command, not per animation
-// frame, so the I2C traffic stays proportional to commands rather than frames.
-static void driveMotor(int dir, int speed) {
-  if (!motorReady) {
-    return;
+// Commanded target for the integrator, as a signed raw H-bridge value.
+static float targetRaw() {
+  if (appliedDir == 0 || appliedDir == -99 || appliedSpeed < 1) {
+    return 0.0f;
   }
-  if (dir == 0) {
-    motors.stop();
-    return;
-  }
+  return (float)appliedDir * (float)rawForSpeed(appliedSpeed);
+}
 
-  // The motor bridges terminal 1A (channel A) and 2A (channel B), so it only
-  // sees a voltage when the two channels are pushed in opposite directions.
-  int16_t raw = rawForSpeed(speed);
-  motors.setDcSpeedRaw(dir > 0 ? raw : (int16_t)-raw,
-                       dir > 0 ? (int16_t)-raw : raw);
+// One integrator step. The motor bridges terminal 1A (channel A) and 2A
+// (channel B), so the channels are driven in opposite phase:
+// setDcSpeedRaw(+out, -out). Writes go to the module only when the output
+// moved ~1% of full scale (or for the final snap to zero), keeping the I2C
+// traffic modest at 40 Hz.
+static void stepMotor(unsigned long now) {
+  if (now - lastMotorStepMs < MOTOR_UPDATE_MS) {
+    return;
+  }
+  float dt = (float)(now - lastMotorStepMs) / 1000.0f;
+  if (dt > 0.1f) {
+    dt = 0.1f;  // clamp after blocking stretches (self-test) so state can't jump
+  }
+  lastMotorStepMs = now;
+
+  float target = targetRaw();
+  motorState += dt * (target - motorState / MOTOR_TAU_S);
+
+  float outF = motorState / MOTOR_TAU_S;
+  const float lim = (float)ModulinoMotors::MAX_SPEED;
+  if (outF > lim) {
+    outF = lim;
+  }
+  if (outF < -lim) {
+    outF = -lim;
+  }
+  int16_t out = (int16_t)outF;
+
+  const int deadband = ModulinoMotors::MAX_SPEED / 100;  // ~1% of full scale
+  if (target == 0.0f && out > -deadband && out < deadband) {
+    if (!motorSettled) {
+      motors.stop();
+      motorState = 0.0f;
+      lastWrittenRaw = 0;
+      motorSettled = true;
+    }
+    return;
+  }
+  int delta = (int)out - (int)lastWrittenRaw;
+  if (delta < 0) {
+    delta = -delta;
+  }
+  if (delta >= deadband || motorSettled) {
+    if (motors.setDcSpeedRaw(out, (int16_t)-out)) {
+      lastWrittenRaw = out;
+      motorSettled = false;
+    }
+  }
 }
 
 // Sample the current sensors and hand the numbers to the Linux side. Used by
@@ -234,8 +297,11 @@ static void runSelftest(int percent) {
 
   motors.setHalfFullScaleEnabled(false);
 
-  // Put the wheel back where the app last left it.
-  driveMotor(appliedDir == -99 ? 0 : appliedDir, appliedSpeed < 1 ? 5 : appliedSpeed);
+  // Ramp back to the current target from rest rather than jumping.
+  motorState = 0.0f;
+  lastWrittenRaw = 0;
+  motorSettled = false;
+  lastMotorStepMs = millis();
 }
 
 static bool beginMotors() {
@@ -245,9 +311,13 @@ static bool beginMotors() {
   motors.setStepperModeEnabled(false);  // DC, not stepper
   motors.setDecay(ModulinoMotors::DecayMode::SLOW);
   motors.stop();
-  // Force the next loop() pass to re-apply and re-report the wheel state.
+  // Force the next loop() pass to re-apply and re-report the wheel state,
+  // and restart the ramp from rest.
   appliedDir = -99;
   appliedSpeed = -99;
+  motorState = 0.0f;
+  lastWrittenRaw = 0;
+  motorSettled = true;
   return true;
 }
 
@@ -269,8 +339,9 @@ void set_wheel(int dir, int speed) {
   lastCommandMs = millis();
 }
 
-void set_vibro(int on) {
+void set_vibro(int on, int period) {
   desiredVibro = (on != 0);
+  vibroPeriodMs = period;
   lastCommandMs = millis();
 }
 
@@ -360,22 +431,33 @@ void loop() {
   }
 
   // Failsafe: without fresh commands from the Linux side, stop everything.
+  // The wheel stop here is HARD (no ramp-down) — safety first.
   int effDir = wheelDir;
   int effSpeed = wheelSpeed;
   bool vibroTarget = desiredVibro;
-  if (lastCommandMs == 0 || (now - lastCommandMs) > COMMAND_TIMEOUT_MS) {
+  bool failsafe = (lastCommandMs == 0 || (now - lastCommandMs) > COMMAND_TIMEOUT_MS);
+  if (failsafe) {
     effDir = 0;
     vibroTarget = false;
+    if (!failsafeLatched) {
+      failsafeLatched = true;
+      if (motorReady) {
+        motors.stop();
+      }
+      motorState = 0.0f;
+      lastWrittenRaw = 0;
+      motorSettled = true;
+    }
+  } else {
+    failsafeLatched = false;
   }
 
-  // React to a new command: drive the motor, tell Python what actually got
+  // React to a new command: record the ramp target, tell Python what got
   // applied, and log. All of it outside the bridge handler, where blocking and
-  // nested RPCs are safe.
+  // nested RPCs are safe. The integrator below does the actual driving.
   if (effDir != appliedDir || effSpeed != appliedSpeed) {
     appliedDir = effDir;
     appliedSpeed = effSpeed;
-
-    driveMotor(effDir, effSpeed);
 
     // Fire-and-forget, so a Python side that is not listening cannot stall us.
     // motorReady rides along so the app can flag a missing Modulino.
@@ -388,15 +470,32 @@ void loop() {
     dirty = true;
   }
 
-  // Proximity haptics: rhythmic pulses while an object is inside the
-  // threshold. Each pulse self-terminates after VIBRO_PULSE_MS, so a wedged
-  // loop cannot leave the vibro buzzing.
+  // Ramp the H-bridge toward the commanded target (leaky integrator).
+  if (motorReady && !failsafe) {
+    stepMotor(now);
+  }
+
+  // Proximity haptics at the commanded rhythm: the period tightens as the
+  // obstacle closes; period <= 0 is the "stop now" tier (continuous buzz).
+  // Every buzz is a self-terminating vibro.on(), so a wedged loop cannot
+  // leave the vibro latched on.
   if (vibroReady) {
     if (vibroTarget) {
-      if (!vibroActive || (now - lastPulseMs) >= VIBRO_PERIOD_MS) {
-        vibro.on(VIBRO_PULSE_MS);
-        lastPulseMs = now;
-        vibroActive = true;
+      int period = vibroPeriodMs;
+      if (period <= 0) {
+        // Continuous: refresh the buzz before the previous one expires.
+        if (!vibroActive || (now - lastPulseMs) >= VIBRO_CONT_REFRESH_MS) {
+          vibro.on(VIBRO_CONT_ON_MS);
+          lastPulseMs = now;
+          vibroActive = true;
+        }
+      } else {
+        unsigned long pulse = (unsigned long)constrain(period / 2, 100, 250);
+        if (!vibroActive || (now - lastPulseMs) >= (unsigned long)period) {
+          vibro.on(pulse);
+          lastPulseMs = now;
+          vibroActive = true;
+        }
       }
     } else if (vibroActive) {
       vibro.off();
