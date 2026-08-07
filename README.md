@@ -130,8 +130,10 @@ threshold to **1200 mm** so obstacles register early enough to walk around.
   are walking and probably not looking at the screen, so the buzz is the stop
   signal; it ends the moment the path is clear (and is muted while the app is in
   the background). See `haptics/ObstacleHaptics.kt`.
-- The avoidance state is mirrored back to the cane's web dashboard as
-  `AVOID LEFT` / `AVOID RIGHT` / `CLEAR` ("message from phone").
+- Steering is streamed back to the cane and physically drives its wheel:
+  `AVOID LEFT` / `AVOID RIGHT` while dodging, `TURN LEFT/RIGHT <deg>` when
+  the route itself bends (wheel speed scales with the angle), `CLEAR` when
+  aligned. The messages also show on the cane's web dashboard.
 
 The link is automatic: power the cane and the phone finds it within seconds
 (rescans every few seconds while disconnected). The BT dialog shows its status.

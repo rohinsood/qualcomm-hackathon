@@ -14,6 +14,7 @@ dashboard (port 7000) shows per-Modulino informatics and manual controls.
 
 import json
 import os
+import re
 import select
 import socket
 import threading
@@ -50,6 +51,21 @@ ACTION_NAMES = {value: name for name, value in DIRECTIONS.items()}
 DEFAULT_SPEED = 3    # phone commands without a speed
 DASHBOARD_SPEED = 5  # dashboard buttons always drive full scale
 
+# Wheel speed for route turns from the phone ("TURN LEFT 90"), by degrees off
+# course: first row whose min_deg the angle reaches wins.
+TURN_SPEED_TABLE = ((75, 5), (45, 4), (30, 3), (0, 2))
+
+# Deterministic on-board obstacle avoidance — engaged only while NO phone is
+# connected over BLE (a connected qhackGPS owns the dodge; it knows the
+# route). Maneuver: turn away from the obstacle while it is present, then
+# counter-turn for AUTO_RECOVER_FRACTION of the avoid time to rejoin the
+# original line, then stop.
+AUTO_AVOID = True
+AUTO_AVOID_DIR = 1           # dodge side: +1 = right, -1 = left
+AUTO_RECOVER_FRACTION = 0.6  # counter-turn fraction of the avoid duration
+AUTO_RECOVER_MIN_S = 0.5
+AUTO_RECOVER_MAX_S = 4.0
+
 ui = WebUI()
 
 _lock = threading.Lock()
@@ -76,9 +92,13 @@ _state = {
     "motor_busy": False, # driver busy flag from module telemetry
     "vibro_active": False,  # True while the sketch is running the pulse rhythm
     "cane_daemon": False,   # True while the QCane BT daemon socket is connected
+    "auto_steer": "idle",   # on-board avoidance state: idle | avoiding | recovering
     "bt": {"advertising": False, "connected": False, "device": None},
     "events": [],        # rolling event log, newest last
 }
+_auto_state = "idle"
+_auto_started = 0.0
+_auto_recover_until = 0.0
 _events = deque(maxlen=EVENT_LOG_LEN)
 _motor_history = deque(maxlen=MOTOR_HISTORY_LEN)
 _last_reading_t = 0.0
@@ -280,29 +300,97 @@ def _push_actuators():
         logger.debug("Failed to push actuator state to the sketch")
 
 
-def _steer_command(text: str):
-    """Map phone text to a wheel command: -1 left, +1 right, 0 stop, None no-op.
-    Substring match, so qhackGPS's "AVOID LEFT"/"AVOID RIGHT"/"CLEAR" work."""
+_TURN_RE = re.compile(r"TURN\s+(LEFT|RIGHT)\s*(\d+)?")
+
+
+def _speed_for_deg(deg: int) -> int:
+    for min_deg, speed in TURN_SPEED_TABLE:
+        if deg >= min_deg:
+            return speed
+    return TURN_SPEED_TABLE[-1][1]
+
+
+def _steer_from_text(text: str):
+    """Map phone text to (dir, speed), or None for display-only text.
+
+    "TURN LEFT 90" / "TURN RIGHT 35"  -> route turn, speed scaled by the angle
+    "AVOID LEFT" / anything with LEFT -> full-speed dodge (qhackGPS obstacle)
+    "CLEAR" / "STOP" / "STRAIGHT"     -> stop the wheel
+    """
     t = text.upper()
+    m = _TURN_RE.search(t)
+    if m:
+        deg = int(m.group(2)) if m.group(2) else 45
+        direction = -1 if m.group(1) == "LEFT" else 1
+        return direction, _speed_for_deg(deg)
     if "LEFT" in t:
-        return -1
+        return -1, DASHBOARD_SPEED
     if "RIGHT" in t:
-        return 1
-    if "CLEAR" in t or "STOP" in t or "CENTER" in t:
-        return 0
+        return 1, DASHBOARD_SPEED
+    if any(word in t for word in ("CLEAR", "STOP", "CENTER", "STRAIGHT")):
+        return 0, DASHBOARD_SPEED
     return None
 
 
 def _set_wheel(direction: int, speed: int, reason: str):
+    global _auto_state
     with _lock:
         changed = (_state["motor"] != direction
                    or _state["wheel_speed"] != speed)
         _state["motor"] = direction
         _state["wheel_speed"] = speed
+        # Any phone/dashboard command takes over from the on-board avoidance.
+        if not reason.startswith("auto") and _auto_state != "idle":
+            _auto_state = "idle"
+            _state["auto_steer"] = "idle"
     if changed:
         _push_actuators()
         word = ACTION_NAMES.get(direction, "stop")
         _log_event(f"Wheel -> {word} speed {speed} ({reason})")
+
+
+def _auto_on_presence(present: bool):
+    """Deterministic on-board avoidance state machine. Runs only while no
+    phone is connected over BLE; every transition goes through _set_wheel
+    with an "auto…" reason, so any real command cancels it instantly."""
+    global _auto_state, _auto_started, _auto_recover_until
+    now = time.monotonic()
+    action = None
+    with _lock:
+        if present:
+            if (AUTO_AVOID and not _state["bt"]["connected"]
+                    and _auto_state != "avoiding"):
+                _auto_state = "avoiding"
+                _auto_started = now
+                _state["auto_steer"] = "avoiding"
+                action = (AUTO_AVOID_DIR, DASHBOARD_SPEED,
+                          "auto-avoid: obstacle ahead, dodging "
+                          + ("right" if AUTO_AVOID_DIR > 0 else "left"))
+        elif _auto_state == "avoiding":
+            duration = now - _auto_started
+            recover = max(AUTO_RECOVER_MIN_S,
+                          min(AUTO_RECOVER_MAX_S,
+                              duration * AUTO_RECOVER_FRACTION))
+            _auto_state = "recovering"
+            _auto_recover_until = now + recover
+            _state["auto_steer"] = "recovering"
+            action = (-AUTO_AVOID_DIR, DASHBOARD_SPEED,
+                      f"auto-recover: {recover:.1f}s counter-turn back to line")
+    if action:
+        _set_wheel(*action)
+
+
+def _auto_tick(now: float):
+    """Finish the counter-turn once its time is up (called from the watchdog)."""
+    global _auto_state
+    done = False
+    with _lock:
+        if _auto_state == "recovering" and now >= _auto_recover_until:
+            _auto_state = "idle"
+            _state["auto_steer"] = "idle"
+            done = True
+    if done:
+        _set_wheel(0, DASHBOARD_SPEED, "auto-recover complete, back on line")
 
 
 # ---- Bridge handlers (sketch -> app) ----------------------------------------
@@ -331,6 +419,7 @@ def on_distance_reading(mm: float):
             _log_event(f"Obstacle at {mm:.0f} mm — vibro on")
         else:
             _log_event("Path clear — vibro off")
+        _auto_on_presence(present)
     _emit()
 
 
@@ -437,6 +526,12 @@ def watchdog():
     if _bt_last_t and (now - _bt_last_t) > 12.0:
         with _lock:
             _state["bt"] = {"advertising": False, "connected": False, "device": None}
+    # On-board avoidance: level-triggered (also engages if the phone drops
+    # while an obstacle is already in front) + finish pending counter-turns.
+    with _lock:
+        present_now = _state["present"]
+    _auto_on_presence(present_now)
+    _auto_tick(now)
     _push_actuators()
     _emit(force=True)
 
@@ -467,9 +562,9 @@ def set_phone_msg(payload: dict):
         _state["phone_msg"] = text or None
     if text:
         _log_event(f"Phone (NUS): {text!r}")
-        command = _steer_command(text)
+        command = _steer_from_text(text)
         if command is not None:
-            _set_wheel(command, DASHBOARD_SPEED, f"NUS text {text!r}")
+            _set_wheel(command[0], command[1], f"NUS text {text!r}")
     _emit(force=True)
     return {"ok": True}
 

@@ -88,15 +88,30 @@ is in range.
 |---|---|
 | a number, e.g. `1200` | sets the presence threshold (mm); ack `{"thr":1200}` |
 | `get` | state snapshot as JSON |
-| text containing `left` / `right` | spins the wheel that way at full speed (e.g. `AVOID LEFT`) |
-| text containing `clear` / `stop` | stops the wheel |
+| `TURN LEFT 90` / `TURN RIGHT 35` | route turn: wheel turns that way, speed scaled by the angle (≥75° → 5, 45–74° → 4, 30–44° → 3, else 2) |
+| other text containing `left` / `right` | full-speed dodge (e.g. `AVOID LEFT`) |
+| text containing `clear` / `stop` / `straight` | stops the wheel |
 | any other text | shown on the dashboard as "message from phone" |
 
 **qhackGPS** (repo root) is the primary client: it auto-discovers "Distance
 Watch", subscribes to the distance stream, widens the threshold to 1200 mm
-on connect, and mirrors its avoidance state back as `AVOID LEFT` /
-`AVOID RIGHT` / `CLEAR` — which now physically steers the wheel. The wheel
+on connect, and streams its steering back — `AVOID LEFT`/`AVOID RIGHT`
+while dodging an obstacle, `TURN LEFT/RIGHT <deg>` when the route itself
+bends (a 90° corner starts the wheel turning the moment guidance calls it),
+`CLEAR` when aligned — all of which physically drive the wheel. The wheel
 also stops when the phone disconnects or the bridge dies.
+
+## Deterministic on-board avoidance (no phone needed)
+
+While **no phone is connected** over BLE, the board runs its own avoidance
+state machine: the moment an obstacle enters the threshold it turns the
+wheel away (`AUTO_AVOID_DIR`, default right, full speed); when the path
+clears it counter-turns for 60 % of the avoid time (clamped 0.5–4 s) to
+rejoin the original line, then stops. Every step is logged to the dashboard
+event feed, `auto_steer` in `/api/state` shows the phase, and any real
+command (phone or dashboard) cancels the maneuver instantly. A connected
+qhackGPS suppresses it entirely — the phone owns the dodge, since it knows
+the route.
 
 Service install (first time on a board; fix the path in the unit to match
 where this repo lives):

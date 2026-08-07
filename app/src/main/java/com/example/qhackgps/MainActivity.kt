@@ -129,6 +129,9 @@ private const val ALIGN_EXIT_DEG = 25f
 /** Nominal turn (degrees) exported while steering the user around an obstacle. */
 private const val AVOID_TURN_DEG = 45
 
+/** Route turns smaller than this are not sent to the cane wheel (deadband). */
+private const val CANE_TURN_MIN_DEG = 15
+
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
     Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -391,16 +394,25 @@ fun NavigatorScreen() {
     )
     SideEffect { GuidanceBus.publish(guidanceUpdate) }
 
-    // Mirror the avoidance state onto the cane's web dashboard ("message from phone").
-    LaunchedEffect(avoidance, caneState) {
+    // Stream steering to the cane so its wheel physically follows the path:
+    // obstacle dodges as AVOID LEFT/RIGHT (wheel at full speed), route turns as
+    // TURN LEFT/RIGHT <deg> (wheel speed scales with the angle — a 90° corner
+    // starts the wheel turning the moment guidance calls it), CLEAR when
+    // aligned or idle. Degrees are bucketed to 5° so a BLE write only fires on
+    // a real change; each message also shows on the cane's dashboard.
+    val caneSteerMsg = when {
+        avoidance == TurnDirection.LEFT -> "AVOID LEFT"
+        avoidance == TurnDirection.RIGHT -> "AVOID RIGHT"
+        routeDirection == TurnDirection.LEFT || routeDirection == TurnDirection.RIGHT -> {
+            val deg = headingDelta?.let { abs(it).roundToInt() } ?: 0
+            if (deg < CANE_TURN_MIN_DEG) "CLEAR"
+            else "TURN ${if (routeDirection == TurnDirection.LEFT) "LEFT" else "RIGHT"} ${(deg / 5) * 5}"
+        }
+        else -> "CLEAR"
+    }
+    LaunchedEffect(caneSteerMsg, caneState) {
         if (caneState is CaneLinkState.Connected) {
-            caneLink.write(
-                when (avoidance) {
-                    TurnDirection.LEFT -> "AVOID LEFT"
-                    TurnDirection.RIGHT -> "AVOID RIGHT"
-                    else -> "CLEAR"
-                }
-            )
+            caneLink.write(caneSteerMsg)
         }
     }
 
