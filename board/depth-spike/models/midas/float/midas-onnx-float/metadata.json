@@ -1,0 +1,43 @@
+{
+    "model_id": "midas",
+    "model_name": "Midas-V2",
+    "runtime": "onnx",
+    "precision": "float",
+    "tool_versions": {
+        "qairt": "2.45.0.260326154327",
+        "onnx_runtime": "1.27.1"
+    },
+    "model_files": {
+        "midas.onnx": {
+            "inputs": {
+                "image": {
+                    "shape": [
+                        1,
+                        3,
+                        256,
+                        256
+                    ],
+                    "dtype": "float32",
+                    "io_type": "image",
+                    "image_metadata": {},
+                    "value_range": [
+                        0.0,
+                        1.0
+                    ]
+                }
+            },
+            "outputs": {
+                "depth_estimates": {
+                    "shape": [
+                        1,
+                        1,
+                        256,
+                        256
+                    ],
+                    "dtype": "float32",
+                    "description": "Monocular depth map"
+                }
+            }
+        }
+    }
+}

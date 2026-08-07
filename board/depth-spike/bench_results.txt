@@ -1,0 +1,19 @@
+# input source: synthetic, threads=3, iters=12
+{"model": "midas-float", "input": "256x256", "median_ms": 863.6, "p95_ms": 1022.6, "min_ms": 859.5, "fps": 1.16, "peak_mb": 197.4, "file_mb": 0.1}
+{"model": "midas-w8a8", "input": "256x256", "median_ms": 1001.1, "p95_ms": 1009.1, "min_ms": 990.6, "fps": 1.0, "peak_mb": 156.9, "file_mb": 0.3}
+{"model": "da-small", "input": "126x126", "median_ms": 451.8, "p95_ms": 453.0, "min_ms": 450.0, "fps": 2.21, "peak_mb": 212.8, "file_mb": 99.1}
+{"model": "da-small", "input": "252x252", "median_ms": 1728.2, "p95_ms": 1731.5, "min_ms": 1723.6, "fps": 0.58, "peak_mb": 244.5, "file_mb": 99.1}
+{"model": "da-small", "input": "378x378", "median_ms": 4172.1, "p95_ms": 4184.4, "min_ms": 4162.3, "fps": 0.24, "peak_mb": 303.3, "file_mb": 99.1}
+
+========================================================================
+PHASE 2 BENCHMARK  UNO Q / QRB2210  4xA53@2GHz  CPU-only  3 threads
+========================================================================
+model             input   median      p95    fps  peakMB  fileMB
+----------------------------------------------------------------
+midas-float     256x256     864m    1023m   1.16     197     0.1
+midas-w8a8      256x256    1001m    1009m   1.00     157     0.3
+da-small        126x126     452m     453m   2.21     213    99.1
+da-small        252x252    1728m    1732m   0.58     244    99.1
+da-small        378x378    4172m    4184m   0.24     303    99.1
+========================================================================
+DONE
