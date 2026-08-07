@@ -61,6 +61,7 @@ class FrameAnalyzer(
     private val onResult: (FrameResult) -> Unit,
     private val segEngine: SegEngine? = null,
     private val path: PathPipeline? = null,
+    private val segEngine2: SegEngine? = null,
 ) : ImageAnalysis.Analyzer {
 
     companion object {
@@ -177,19 +178,28 @@ class FrameAnalyzer(
                 colorizeDepth(depth, padX, padY)
             } else null
 
-            // ---- v2: fold this depth frame into the traversability grid
+            // ---- v2: fold this depth frame into the traversability grid.
+            // Segmentation is an ENSEMBLE: FFNet (outdoor expert) + the
+            // ADE20K member (knows floors); a pixel is walkable when either
+            // model votes for it.
             path?.let { p ->
-                val seg = segEngine?.segment(upright)
-                if (seg != null) {
+                val engA = segEngine
+                val engB = segEngine2
+                val segA = engA?.segment(upright)
+                if (segA != null && engA != null) {
                     p.segClearance = WalkableColumns.clearance(
-                        seg, SegEngine.OUT_W, SegEngine.OUT_H, SegEngine.WALKABLE_CLASSES,
+                        segA, engA.outW, engA.outH, engA.walkable,
                     )
                 }
+                val segB = engB?.segment(upright)
                 p.updateGrid(
                     metricDepth(depth),
                     depth.size,
                     depth.size,
-                    seg?.let { walkableInDepthSpace(it, depth.size, padX, padY, scale, upright) },
+                    mergedWalkable(
+                        segA, engA, segB, engB,
+                        depth.size, padX, padY, scale, upright,
+                    ),
                 )
             }
         }
@@ -257,18 +267,23 @@ class FrameAnalyzer(
     }
 
     /**
-     * Sample the FFNet class map into depth-pixel geometry: depth px ->
-     * 640 letterbox space -> source frame -> seg output coords.
-     * 1 = walkable class, 0 = not, -1 = outside the frame.
+     * Sample both ensemble members' class maps into depth-pixel geometry:
+     * depth px -> 640 letterbox space -> source frame -> each model's
+     * output coords. 1 = either model votes walkable, 0 = every available
+     * model votes unwalkable, -1 = outside the frame / no opinion.
      */
-    private fun walkableInDepthSpace(
-        seg: ByteArray,
+    private fun mergedWalkable(
+        segA: ByteArray?,
+        engA: SegEngine?,
+        segB: ByteArray?,
+        engB: SegEngine?,
         ds: Int,
         padX: Float,
         padY: Float,
         scale: Float,
         upright: Bitmap,
-    ): ByteArray {
+    ): ByteArray? {
+        if (segA == null && segB == null) return null
         val out = ByteArray(ds * ds)
         val to640 = size.toFloat() / ds
         val fw = upright.width.toFloat()
@@ -280,19 +295,34 @@ class FrameAnalyzer(
                 val i = dv * ds + du
                 if (sx < 0f || sy < 0f || sx >= fw || sy >= fh) {
                     out[i] = -1
-                } else {
-                    val gx = (sx / fw * SegEngine.OUT_W).toInt()
-                        .coerceIn(0, SegEngine.OUT_W - 1)
-                    val gy = (sy / fh * SegEngine.OUT_H).toInt()
-                        .coerceIn(0, SegEngine.OUT_H - 1)
-                    val cls = seg[gy * SegEngine.OUT_W + gx].toInt()
-                    out[i] = if (cls in 0 until SegEngine.NUM_CLASSES &&
-                        SegEngine.WALKABLE_CLASSES[cls]
-                    ) 1 else 0
+                    continue
+                }
+                val a = vote(segA, engA, sx, sy, fw, fh)
+                val b = vote(segB, engB, sx, sy, fw, fh)
+                out[i] = when {
+                    a == 1 || b == 1 -> 1
+                    a == 0 || b == 0 -> 0
+                    else -> -1
                 }
             }
         }
         return out
+    }
+
+    /** One model's walkability vote at a frame position: 1/0, or -1 n/a. */
+    private fun vote(
+        seg: ByteArray?,
+        eng: SegEngine?,
+        sx: Float,
+        sy: Float,
+        fw: Float,
+        fh: Float,
+    ): Int {
+        if (seg == null || eng == null) return -1
+        val gx = (sx / fw * eng.outW).toInt().coerceIn(0, eng.outW - 1)
+        val gy = (sy / fh * eng.outH).toInt().coerceIn(0, eng.outH - 1)
+        val cls = seg[gy * eng.outW + gx].toInt()
+        return if (cls in eng.walkable.indices && eng.walkable[cls]) 1 else 0
     }
 
     /**

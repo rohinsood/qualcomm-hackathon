@@ -100,7 +100,8 @@ class ShepherdService : LifecycleService() {
 
     private val engine = DetectionEngine()
     private val depthEngine = DepthEngine()
-    private val segEngine = SegEngine()
+    private val segEngine = SegEngine(SegEngine.FFNET)
+    private val segEngineAde = SegEngine(SegEngine.ADE)
     private val pathPipeline = PathPipeline()
     private val guidanceEngine = GuidanceEngine() // v1 fallback when no depth model
     private val blackboard = SceneBlackboard()
@@ -268,6 +269,7 @@ class ShepherdService : LifecycleService() {
                 if (detectionOk) {
                     depthEngine.initialize(this@ShepherdService)
                     segEngine.initialize(this@ShepherdService)
+                    segEngineAde.initialize(this@ShepherdService)
                 }
                 detectionOk
             }
@@ -283,6 +285,9 @@ class ShepherdService : LifecycleService() {
                 }
                 if (segEngine.available) {
                     append(" +seg(").append(segEngine.activeProvider).append(")")
+                }
+                if (segEngineAde.available) {
+                    append(" +ade(").append(segEngineAde.activeProvider).append(")")
                 }
             }
             DebugLog.d("VIS", visionLabel)
@@ -309,6 +314,7 @@ class ShepherdService : LifecycleService() {
                 ::onFrame,
                 segEngine.takeIf { it.available },
                 pathPipeline.takeIf { depthEngine.available },
+                segEngineAde.takeIf { it.available },
             )
             analyzer = fa
             analysis.setAnalyzer(analysisExecutor, fa)
@@ -496,6 +502,7 @@ class ShepherdService : LifecycleService() {
         ocr.close()
         actuator.disconnect()
         analysisExecutor.shutdown()
+        segEngineAde.close()
         segEngine.close()
         depthEngine.close()
         engine.close()
