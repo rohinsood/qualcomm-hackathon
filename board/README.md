@@ -117,8 +117,8 @@ Service install (first time on a board; fix the path in the unit to match
 where this repo lives):
 
 ```bash
-sed "s|/home/arduino/dev/qhackcane/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-ble-bridge.service > ~/.config/systemd/user/qhack-ble-bridge.service
-sed "s|/home/arduino/dev/qhackcane/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-bt-agent.service  > ~/.config/systemd/user/qhack-bt-agent.service
+sed "s|/home/arduino/dev/qualcomm-hackathon/board/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-ble-bridge.service > ~/.config/systemd/user/qhack-ble-bridge.service
+sed "s|/home/arduino/dev/qualcomm-hackathon/board/ble-bridge|$(pwd)/ble-bridge|" ble-bridge/qhack-bt-agent.service  > ~/.config/systemd/user/qhack-bt-agent.service
 systemctl --user daemon-reload && systemctl --user enable --now qhack-ble-bridge qhack-bt-agent
 ```
 

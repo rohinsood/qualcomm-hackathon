@@ -1,9 +1,10 @@
 [Unit]
 Description=BLE bridge: Distance Watch app <-> phone (Nordic UART Service)
+StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/bin/python3 /home/arduino/dev/qhackcane/ble-bridge/ble_bridge.py
-Restart=on-failure
+ExecStart=/usr/bin/python3 /home/arduino/dev/qualcomm-hackathon/board/ble-bridge/ble_bridge.py
+Restart=always
 RestartSec=3
 
 [Install]
