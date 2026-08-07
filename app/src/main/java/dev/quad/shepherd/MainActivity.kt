@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     private var googleMap: GoogleMap? = null
     private var drawnRoute: List<DoubleArray>? = null
     private var positionMarker: Marker? = null
+    private var destMarker: Marker? = null
+    private var beeline: com.google.android.gms.maps.model.Polyline? = null
 
     private val uiListener = object : ShepherdService.UiListener {
         override fun onFrame(result: FrameResult, guidance: GuidanceEngine.Guidance) {
@@ -137,6 +139,9 @@ class MainActivity : AppCompatActivity() {
             binding.steerView.updateLayoutParams<ViewGroup.MarginLayoutParams> {
                 bottomMargin = (120 * density).toInt() + bars.bottom
             }
+            binding.mapView.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                topMargin = (64 * density).toInt() + bars.top
+            }
             binding.overlay.bottomInset = bars.bottom
             insets
         }
@@ -187,6 +192,11 @@ class MainActivity : AppCompatActivity() {
         binding.mapView.getMapAsync { map ->
             googleMap = map
             map.uiSettings.isMapToolbarEnabled = false
+            map.uiSettings.isZoomControlsEnabled = true
+            // Tap the map to set the walking destination (qhackgps flow)
+            map.setOnMapClickListener { latLng ->
+                service?.nav?.setDestination(latLng.latitude, latLng.longitude)
+            }
         }
 
         val wanted = mutableListOf<String>()
@@ -194,6 +204,12 @@ class MainActivity : AppCompatActivity() {
         if (notGranted(Manifest.permission.RECORD_AUDIO)) wanted += Manifest.permission.RECORD_AUDIO
         if (notGranted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             wanted += Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        if (notGranted(Manifest.permission.BLUETOOTH_SCAN)) {
+            wanted += Manifest.permission.BLUETOOTH_SCAN
+        }
+        if (notGranted(Manifest.permission.BLUETOOTH_CONNECT)) {
+            wanted += Manifest.permission.BLUETOOTH_CONNECT
         }
         if (Build.VERSION.SDK_INT >= 33 && notGranted(Manifest.permission.POST_NOTIFICATIONS)) {
             wanted += Manifest.permission.POST_NOTIFICATIONS
@@ -327,73 +343,45 @@ class MainActivity : AppCompatActivity() {
         ).also { voice = it }
     }
 
-    /** Route mini-map: visible while navigating, redrawn per route. */
+    /**
+     * Compass-nav map (qhackgps flow): tap sets the destination; a straight
+     * line joins you to it — the "beeline" the compass guidance follows.
+     */
     private fun updateNavMap() {
-        val nav = service?.nav
-        val route = nav?.routeLatLngs
-        if (route == null) {
-            if (binding.mapView.visibility != View.GONE) {
-                binding.mapView.visibility = View.GONE
-                drawnRoute = null
-                positionMarker = null
-                googleMap?.clear()
-            }
-            return
-        }
-        if (binding.mapView.visibility != View.VISIBLE) {
-            binding.mapView.visibility = View.VISIBLE
-        }
+        val nav = service?.nav ?: return
         val map = googleMap ?: return
-        if (route !== drawnRoute) {
-            drawnRoute = route
-            positionMarker = null
-            map.clear()
-            val poly = PolylineOptions().color(0xFF2196F3.toInt()).width(8f)
-            route.forEach { poly.add(LatLng(it[0], it[1])) }
-            map.addPolyline(poly)
-            nav.destLatLng?.let {
-                map.addMarker(MarkerOptions().position(LatLng(it[0], it[1])))
-            }
-            // Lite-mode maps don't honor bounds-based camera updates (they
-            // collapse to world zoom), so compute the zoom ourselves from
-            // the route's span and the panel's pixel size, and use
-            // newLatLngZoom — which lite mode supports properly.
-            var minLat = route[0][0]
-            var maxLat = route[0][0]
-            var minLng = route[0][1]
-            var maxLng = route[0][1]
-            for (p in route) {
-                if (p[0] < minLat) minLat = p[0]
-                if (p[0] > maxLat) maxLat = p[0]
-                if (p[1] < minLng) minLng = p[1]
-                if (p[1] > maxLng) maxLng = p[1]
-            }
-            val centerLat = (minLat + maxLat) / 2
-            val centerLng = (minLng + maxLng) / 2
-            val cosLat = Math.cos(Math.toRadians(centerLat))
-            val spanMeters = maxOf(
-                (maxLat - minLat) * 110_540.0,
-                (maxLng - minLng) * 111_320.0 * cosLat,
-                120.0,
-            )
-            // Maps zoom is defined in dp (the world is 256 dp wide at zoom
-            // 0), so the panel size goes in as its 160 dp — using pixels
-            // overshot the zoom by log2(density) and cropped the route
-            val viewDp = 160.0
-            val zoom = (Math.log(156_543.03392 * cosLat * viewDp * 0.8 / spanMeters) /
-                Math.log(2.0)).toFloat().coerceIn(3f, 18f)
-            map.moveCamera(
-                CameraUpdateFactory.newLatLngZoom(LatLng(centerLat, centerLng), zoom)
-            )
-        }
-        nav.lastLatLng?.let { pos ->
-            val here = LatLng(pos[0], pos[1])
+        val here = nav.lastLatLng?.let { LatLng(it[0], it[1]) }
+        val dest = nav.destination?.let { LatLng(it[0], it[1]) }
+
+        // User marker
+        if (here != null) {
             positionMarker?.let { it.position = here } ?: run {
                 positionMarker = map.addMarker(
                     MarkerOptions()
                         .position(here)
                         .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE))
                         .anchor(0.5f, 0.5f)
+                )
+                map.moveCamera(CameraUpdateFactory.newLatLngZoom(here, 17f))
+            }
+        }
+
+        // Destination + beeline (redrawn when it changes)
+        val destKey = dest?.let { doubleArrayOf(it.latitude, it.longitude) }
+        if (!destKey.contentEquals(drawnRoute?.getOrNull(0))) {
+            drawnRoute = destKey?.let { listOf(it) }
+            destMarker?.remove()
+            destMarker = null
+            beeline?.remove()
+            beeline = null
+            if (dest != null) {
+                destMarker = map.addMarker(MarkerOptions().position(dest).title("Destination"))
+            }
+        }
+        if (dest != null && here != null) {
+            beeline?.let { it.points = listOf(here, dest) } ?: run {
+                beeline = map.addPolyline(
+                    PolylineOptions().add(here, dest).color(0xFF2196F3.toInt()).width(8f)
                 )
             }
         }

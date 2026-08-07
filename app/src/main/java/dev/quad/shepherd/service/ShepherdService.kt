@@ -35,7 +35,9 @@ import dev.quad.shepherd.guidance.SceneBlackboard
 import dev.quad.shepherd.guidance.SteerFusion
 import dev.quad.shepherd.llm.GenieChat
 import dev.quad.shepherd.llm.OcrReader
-import dev.quad.shepherd.nav.NavEngine
+import dev.quad.shepherd.bt.CaneBleLink
+import dev.quad.shepherd.nav.CompassNav
+import dev.quad.shepherd.path.CommandAggregator
 import dev.quad.shepherd.path.PathPipeline
 import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
@@ -108,15 +110,21 @@ class ShepherdService : LifecycleService() {
     private lateinit var haptics: HapticFeedback
     private val actuator: CaneActuator = NoOpActuator()
     private val ocr = OcrReader()
-    private val navEngine by lazy {
-        NavEngine(this, lifecycleScope) { line ->
+    private val compassNav by lazy {
+        CompassNav(this, lifecycleScope) { line ->
             DebugLog.d("NAV", line)
             speech.announce(line, interrupt = false)
         }
     }
 
-    /** Mini-map data source for the activity. */
-    val nav: NavEngine get() = navEngine
+    /** Map data source + destination setter for the activity. */
+    val nav: CompassNav get() = compassNav
+
+    /** BLE link to the cane board (distance in, motor letters out). */
+    val caneLink by lazy { CaneBleLink(this) }
+    private val aggregator = CommandAggregator()
+    @Volatile private var lastMotorLetter = ' '
+    private var lastCanePresent = false
     private var analyzer: FrameAnalyzer? = null
     private var preview: Preview? = null
     private val analysisExecutor = Executors.newSingleThreadExecutor()
@@ -172,6 +180,8 @@ class ShepherdService : LifecycleService() {
             speech.reloadNeural(this)
             speech.announce("Neural voice installed.")
         }
+        startCaneLink()
+        startMotorLoop()
         startPipeline()
     }
 
@@ -215,6 +225,41 @@ class ShepherdService : LifecycleService() {
 
     fun statusLine(latencyMs: Long, objects: Int): String =
         getString(R.string.status_format, visionLabel, latencyMs, objects) + thermalNote
+
+    /** Cane BLE up: distance readings feed the grid's near-field ring. */
+    private fun startCaneLink() {
+        caneLink.start()
+        lifecycleScope.launch {
+            caneLink.reading.collect { r ->
+                if (r?.present == true && r.mm != null) {
+                    pathPipeline.grid.markNearObstacle(r.mm / 1000f)
+                    if (!lastCanePresent) DebugLog.d("CANE", "obstacle at ${r.mm} mm")
+                    lastCanePresent = true
+                } else if (lastCanePresent) {
+                    lastCanePresent = false
+                    DebugLog.d("CANE", "clear")
+                }
+            }
+        }
+        lifecycleScope.launch {
+            caneLink.state.collect { DebugLog.d("CANE", it.toString()) }
+        }
+    }
+
+    /** One motor letter per 200 ms period, aggregated + failsafe-friendly. */
+    private fun startMotorLoop() {
+        lifecycleScope.launch {
+            while (true) {
+                delay(CommandAggregator.PERIOD_MS)
+                val letter = aggregator.decide()
+                caneLink.write(letter.toString())
+                if (letter != lastMotorLetter) {
+                    lastMotorLetter = letter
+                    DebugLog.d("BT", "motor → $letter")
+                }
+            }
+        }
+    }
 
     private fun startPipeline() {
         lifecycleScope.launch {
@@ -296,8 +341,9 @@ class ShepherdService : LifecycleService() {
         latestFrame = result.frame
         val now = SystemClock.elapsedRealtime()
         val detections = TrafficLightEye.decorate(result.detections, result.frame)
-        // Feed the route goal to the planner for the NEXT frame's plan
-        pathPipeline.goalAngleDeg = navEngine.goalSteer?.let { it * 60f }
+        // Feed the compass-bearing goal to the planner for the next frame:
+        // obstacles bend the path around, the bearing pulls it back on line
+        pathPipeline.goalAngleDeg = compassNav.goalAngleDeg?.coerceIn(-90f, 90f)
         // v2: guidance comes from the polar plan on the BEV grid; the v1
         // column engine remains the fallback when depth/seg models are absent
         val guidance = result.plan?.guidance ?: guidanceEngine.update(
@@ -325,12 +371,15 @@ class ShepherdService : LifecycleService() {
             DebugLog.d("GUID", "danger: ${guidance.nearestLabel ?: "obstacle"} → $action")
         }
         lastSeverity = guidance.severity
-        blackboard.navSummary = navEngine.summary
-        // With the polar plan active the route goal is already inside the
+        blackboard.navSummary = compassNav.summary
+        // With the polar plan active the compass goal is already inside the
         // planner's cost function; the additive fusion only serves the
         // v1 fallback path
         val fused = if (result.plan != null) guidance
-        else guidance.copy(steer = SteerFusion.fuse(guidance, navEngine.goalSteer))
+        else guidance.copy(
+            steer = SteerFusion.fuse(guidance, compassNav.goalAngleDeg?.let { it / 60f }),
+        )
+        aggregator.offer(fused)
         actuator.sendGuidance(fused)
         // Haptics follow the FUSED command so turns are felt, not just seen
         if (guidanceEnabled) haptics.update(fused)
@@ -360,16 +409,16 @@ class ShepherdService : LifecycleService() {
                 speech.announce("I need location permission for navigation.", interrupt = true)
             } else {
                 // Re-promote with the location FGS type now that we have it,
-                // so route following continues with the screen off
+                // so guidance continues with the screen off
                 startForeground(NOTIFICATION_ID, buildNotification(), foregroundTypes())
-                navEngine.start(dest)
+                compassNav.setSpokenDestination(dest)
             }
             onDone(true)
             return
         }
         if (NAV_STOP.containsMatchIn(text)) {
             DebugLog.d("NAV", "intent: stop")
-            navEngine.stop()
+            compassNav.stop()
             onDone(true)
             return
         }
@@ -439,7 +488,8 @@ class ShepherdService : LifecycleService() {
             .removeThermalStatusListener(thermalListener)
         (getSystemService(SENSOR_SERVICE) as SensorManager)
             .unregisterListener(gravityListener)
-        navEngine.stop(announce = false)
+        compassNav.stop(announce = false)
+        caneLink.shutdown()
         genieChat.close()
         speech.shutdown()
         ocr.close()

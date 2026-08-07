@@ -75,14 +75,11 @@
 
     <com.google.android.gms.maps.MapView
         android:id="@+id/mapView"
-        android:layout_width="160dp"
-        android:layout_height="160dp"
-        android:layout_gravity="top|end"
+        android:layout_width="match_parent"
+        android:layout_height="210dp"
+        android:layout_gravity="top"
         android:layout_marginTop="64dp"
-        android:layout_marginEnd="12dp"
-        android:visibility="gone"
-        android:importantForAccessibility="no"
-        app:liteMode="true" />
+        android:importantForAccessibility="no" />
 
     <dev.quad.shepherd.ui.SteerView
         android:id="@+id/steerView"
