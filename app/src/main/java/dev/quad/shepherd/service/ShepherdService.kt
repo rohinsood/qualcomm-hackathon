@@ -286,6 +286,7 @@ class ShepherdService : LifecycleService() {
                 }
             }
             DebugLog.d("VIS", visionLabel)
+            if (!notGrantedLocation()) compassNav.startPassive()
             bindCamera()
             warmChat()
         }
