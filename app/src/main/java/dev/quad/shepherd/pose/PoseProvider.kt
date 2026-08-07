@@ -100,7 +100,41 @@ class PoseProvider(context: Context) {
         }
     }
 
+    // ---- step-length auto-calibration -----------------------------------
+    // While ARCore is tracking, its translation between consecutive steps
+    // IS the user's step length, measured. Feeding that back into PdrPose
+    // means dead reckoning starts from this user's gait, not a population
+    // average — for free, since both signals are already flowing.
+
+    private var lastStepX = Double.NaN
+    private var lastStepY = Double.NaN
+
+    /** Steps accepted into the calibration so far. */
+    @Volatile var stepCalSamples = 0
+        private set
+
+    private fun onRawStep() {
+        val p = pose
+        if (p == null || !arCore.tracking || p.confidence < 1f) {
+            lastStepX = Double.NaN
+            return
+        }
+        if (!lastStepX.isNaN()) {
+            val d = Math.hypot(p.x - lastStepX, p.y - lastStepY)
+            // Outside this band it was not one clean walking step (paused
+            // mid-stride, shuffled, or the detector double-fired)
+            if (d in 0.3..1.4) {
+                pdr.stepMeters = (pdr.stepMeters * 0.95f + d.toFloat() * 0.05f)
+                    .coerceIn(0.45f, 1.05f)
+                stepCalSamples++
+            }
+        }
+        lastStepX = p.x
+        lastStepY = p.y
+    }
+
     fun start() {
+        pdr.rawStepListener = ::onRawStep
         pdr.start()
         arCore.listener = arListener
         val ok = arCore.start()
@@ -113,6 +147,7 @@ class PoseProvider(context: Context) {
     fun stop() {
         arCore.stop()
         pdr.stop()
+        pdr.rawStepListener = null
         arCore.listener = null
     }
 

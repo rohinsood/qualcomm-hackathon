@@ -63,8 +63,24 @@ class AreaMapper {
     val anchor = WorldAnchor()
     private val planner = AStarPlanner()
 
+    /**
+     * One coarse lock over map + anchor + route state. Writers arrive on
+     * the ARCore thread ([onPose]), the main thread (cane readings, route
+     * updates), and the UI reads snapshots — [AreaMap] is explicitly not
+     * thread-safe, so everything goes through here. The rates involved
+     * (30 Hz writes, 1 Hz UI reads) make contention irrelevant.
+     */
+    private val lock = Any()
+
     private var window: AreaMap.Window? = null
     private var costMap: CostMap? = null
+    private var overlayWindow: AreaMap.Window? = null
+
+    /** Breadcrumb trail in AR metres, one point per metre walked. */
+    private val breadcrumbs = ArrayDeque<DoubleArray>()
+
+    /** Freshest pose regardless of trust — the overlay centres on it. */
+    @Volatile private var latestPose: Pose2d? = null
 
     /** ENU frame anchored at the first usable GPS fix. */
     @Volatile var localFrame: LocalFrame? = null
@@ -110,7 +126,8 @@ class AreaMapper {
         depthWidth: Int,
         depthHeight: Int,
         depthFx: Float,
-    ) {
+    ): Unit = synchronized(lock) {
+        latestPose = pose
         if (pose.epoch != map.epoch) {
             Log.w(TAG, "epoch ${map.epoch} -> ${pose.epoch}, dropping the map")
             map.resetForEpoch(pose.epoch)
@@ -126,6 +143,11 @@ class AreaMapper {
         val trusted = pose.confidence >= MIN_STAMP_CONFIDENCE
         if (trusted) {
             map.markStood(pose.x, pose.y)
+            val last = breadcrumbs.lastOrNull()
+            if (last == null || Math.hypot(pose.x - last[0], pose.y - last[1]) >= 1.0) {
+                breadcrumbs.addLast(doubleArrayOf(pose.x, pose.y))
+                while (breadcrumbs.size > 400) breadcrumbs.removeFirst()
+            }
             if (depthMeters != null && depthWidth > 0 && depthFx > 0f) {
                 val scan = ScanBuilder.fromDepth(
                     depthMeters, depthWidth, depthHeight, depthFx,
@@ -150,7 +172,7 @@ class AreaMapper {
      * the system and it sees the near field the camera looks over, so it
      * is stamped at more than full weight.
      */
-    fun onCaneDistance(pose: Pose2d?, mm: Int?, present: Boolean) {
+    fun onCaneDistance(pose: Pose2d?, mm: Int?, present: Boolean): Unit = synchronized(lock) {
         val p = pose ?: return
         if (p.confidence < MIN_STAMP_CONFIDENCE) return
         map.advanceTo(SystemClock.elapsedRealtime() / 1000.0)
@@ -170,7 +192,8 @@ class AreaMapper {
      * accumulates correspondences so [WorldAnchor] can fit the AR frame's
      * true-north bearing from the shape of the walked path.
      */
-    fun onGpsFix(pose: Pose2d?, lat: Double, lng: Double, accuracyM: Float) {
+    fun onGpsFix(pose: Pose2d?, lat: Double, lng: Double, accuracyM: Float): Unit =
+        synchronized(lock) {
         val p = pose ?: return
         val frame = localFrame ?: LocalFrame(lat, lng).also {
             localFrame = it
@@ -193,7 +216,7 @@ class AreaMapper {
      * Seed the frame bearing from the compass before enough ground has
      * been covered to fit it properly. Ignored once a fit exists.
      */
-    fun seedHeading(pose: Pose2d?, trueHeadingDeg: Float) {
+    fun seedHeading(pose: Pose2d?, trueHeadingDeg: Float): Unit = synchronized(lock) {
         val p = pose ?: return
         if (trueHeadingDeg.isNaN()) return
         anchor.seedFromCompass(p.bearingRad, Math.toRadians(trueHeadingDeg.toDouble()).toFloat())
@@ -201,13 +224,13 @@ class AreaMapper {
     }
 
     /** The walking route as [lat, lng] points, or null to clear it. */
-    fun setRoute(points: List<DoubleArray>?) {
+    fun setRoute(points: List<DoubleArray>?): Unit = synchronized(lock) {
         routeLatLng = points
         reprojectRoute()
     }
 
     /** Straight-line destination for indoor/beeline mode. */
-    fun setDestination(lat: Double?, lng: Double?) {
+    fun setDestination(lat: Double?, lng: Double?): Unit = synchronized(lock) {
         destLatLng = if (lat != null && lng != null) doubleArrayOf(lat, lng) else null
         reprojectRoute()
     }
@@ -232,7 +255,7 @@ class AreaMapper {
      *   the goal is projected along it so the planner still gets to route
      *   around obstacles from the very first metre.
      */
-    fun replan(pose: Pose2d, fallbackGoalAngleDeg: Float? = null) {
+    fun replan(pose: Pose2d, fallbackGoalAngleDeg: Float? = null): Unit = synchronized(lock) {
         val goal = goalPoint(pose, fallbackGoalAngleDeg)
         if (goal == null) {
             goalAngleDeg = null
@@ -341,9 +364,88 @@ class AreaMapper {
      * the world map. Correct after a turn, which its own grid was not.
      */
     fun egoView(pose: Pose2d, cellsWide: Int, cellsDeep: Int, cellM: Float): FloatArray =
-        map.egoView(pose, cellsWide, cellsDeep, cellM)
+        synchronized(lock) { map.egoView(pose, cellsWide, cellsDeep, cellM) }
 
     fun debugLine(): String =
         "map ${map.tileCount}t/${map.visitedCells}v · $status · " +
             "anchor ${if (anchor.fitted) "fit" else "compass"}(${anchor.sampleCount})"
+
+    // ---- debug overlay ---------------------------------------------------
+
+    /**
+     * Everything the activity needs to draw the areamap over the Google
+     * map: an ARGB tile of the occupancy around the user, positioned in
+     * lat/lng, plus the walked trail and the planned path as coordinate
+     * lists.
+     *
+     * This doubles as the end-to-end frame check — the render pipeline is
+     * AR metres → [WorldAnchor] → ENU → [LocalFrame] → lat/lng, so if the
+     * red cells sit on the building footprints of the base map, every
+     * transform in that chain is right. If the overlay is rotated against
+     * the streets, the anchor bearing is off (walk further; the trajectory
+     * fit will pull it in).
+     */
+    class OverlayState(
+        val centerLat: Double,
+        val centerLng: Double,
+        /** Rotation of the tile, clockwise from north (= anchor theta). */
+        val bearingDeg: Float,
+        /** Edge length of the square tile, metres. */
+        val widthM: Float,
+        val pixels: IntArray,
+        val pxWide: Int,
+        val pxHigh: Int,
+        /** [lat, lng] per point. */
+        val trail: List<DoubleArray>,
+        val path: List<DoubleArray>,
+    )
+
+    fun overlayState(halfSpanM: Float = 20f): OverlayState? = synchronized(lock) {
+        val frame = localFrame ?: return null
+        val pose = latestPose ?: return null
+
+        val win = map.snapshotWindow(pose.x, pose.y, halfSpanM, overlayWindow)
+        overlayWindow = win
+        val n = win.width
+        val px = IntArray(n * win.height)
+        for (iy in 0 until win.height) {
+            // Bitmap row 0 is the TOP of the image; the window's iy grows
+            // with world +y, so the render flips vertically.
+            val row = (win.height - 1 - iy) * n
+            for (ix in 0 until n) {
+                val l = win.at(ix, iy)
+                px[row + ix] = when {
+                    l > AreaMap.OCCUPIED_THRESHOLD -> 0xD9E53935.toInt() // obstacle
+                    l > 0.2f -> 0x80FB8C00.toInt()                       // suspicious
+                    l < -AreaMap.OCCUPIED_THRESHOLD -> 0x3D43A047        // known free
+                    l < -0.2f -> 0x2643A047                              // leaning free
+                    else -> 0x00000000                                   // unknown
+                }
+            }
+        }
+
+        // Centre of the window (cell-snapped, so the tile does not wobble
+        // by sub-cell amounts between renders)
+        val cx = map.centerOfCell(map.cellOf(pose.x))
+        val cy = map.centerOfCell(map.cellOf(pose.y))
+        val en = anchor.toEastNorth(cx, cy)
+        val ll = frame.toLatLng(en[0], en[1])
+
+        fun toLatLng(p: DoubleArray): DoubleArray {
+            val e = anchor.toEastNorth(p[0], p[1])
+            return frame.toLatLng(e[0], e[1])
+        }
+
+        OverlayState(
+            centerLat = ll[0],
+            centerLng = ll[1],
+            bearingDeg = Math.toDegrees(anchor.thetaRad.toDouble()).toFloat(),
+            widthM = n * map.cellMeters,
+            pixels = px,
+            pxWide = n,
+            pxHigh = win.height,
+            trail = breadcrumbs.map(::toLatLng),
+            path = lastPath?.points?.map(::toLatLng) ?: emptyList(),
+        )
+    }
 }

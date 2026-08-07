@@ -47,6 +47,9 @@ class PdrPose(context: Context) {
 
     var stepMeters = DEFAULT_STEP_M
 
+    /** Fires on every step-detector event, active or not. Sensor thread. */
+    @Volatile var rawStepListener: (() -> Unit)? = null
+
     private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotationMatrix = FloatArray(9)
     private val orientation = FloatArray(3)
@@ -71,7 +74,13 @@ class PdrPose(context: Context) {
                     azimuthRad = orientation[0]
                 }
 
-                Sensor.TYPE_STEP_DETECTOR -> if (active) onStep()
+                Sensor.TYPE_STEP_DETECTOR -> {
+                    // Every step, even while ARCore owns the pose: the
+                    // provider compares steps against ARCore's translation
+                    // to calibrate stepMeters for the day PDR takes over.
+                    rawStepListener?.invoke()
+                    if (active) onStep()
+                }
             }
         }
 

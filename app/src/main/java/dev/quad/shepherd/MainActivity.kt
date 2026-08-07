@@ -28,6 +28,8 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.android.gms.maps.model.GroundOverlay
+import com.google.android.gms.maps.model.GroundOverlayOptions
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
@@ -65,6 +67,15 @@ class MainActivity : AppCompatActivity() {
     private var destMarker: Marker? = null
     private var beeline: com.google.android.gms.maps.model.Polyline? = null
     private var routeLine: com.google.android.gms.maps.model.Polyline? = null
+
+    // Areamap debug overlay: occupancy tile + walked trail + planned path.
+    // The tile renders through anchor->ENU->lat/lng, so red cells sitting
+    // on the base map's building footprints is proof the frame chain is
+    // right, at a glance.
+    private var areaOverlay: GroundOverlay? = null
+    private var trailLine: com.google.android.gms.maps.model.Polyline? = null
+    private var plannedLine: com.google.android.gms.maps.model.Polyline? = null
+    private var lastOverlayAt = 0L
     private var routePointCount = 0
 
     /** Facing-direction arrow for the user marker (rotated by heading). */
@@ -110,14 +121,63 @@ class MainActivity : AppCompatActivity() {
 
         /** Areamap path: no camera frame, but the HUD must still live. */
         override fun onGuidance(guidance: GuidanceEngine.Guidance) {
+            // The overlay bitmap is rendered OFF the UI thread (this is the
+            // areamap loop's thread) and only the finished pieces are posted
+            val now = android.os.SystemClock.elapsedRealtime()
+            val overlay = if (now - lastOverlayAt >= 1000L) {
+                lastOverlayAt = now
+                service?.areaMapper?.overlayState()
+            } else null
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 if (!benching) {
-                    binding.statusText.text = service?.statusLine(0, 0) ?: ""
+                    binding.statusText.text = service?.visionLabel ?: ""
                 }
+                overlay?.let(::renderAreaOverlay)
                 updateNavMap()
             }
         }
+    }
+
+    /** Draw one areamap snapshot: occupancy tile, trail, planned path. */
+    private fun renderAreaOverlay(s: dev.quad.shepherd.map.AreaMapper.OverlayState) {
+        val map = googleMap ?: return
+        val bmp = android.graphics.Bitmap.createBitmap(
+            s.pixels, s.pxWide, s.pxHigh, android.graphics.Bitmap.Config.ARGB_8888,
+        )
+        val image = BitmapDescriptorFactory.fromBitmap(bmp)
+        val centre = LatLng(s.centerLat, s.centerLng)
+        val existing = areaOverlay
+        if (existing == null) {
+            areaOverlay = map.addGroundOverlay(
+                GroundOverlayOptions()
+                    .image(image)
+                    .position(centre, s.widthM)
+                    .bearing(s.bearingDeg)
+                    .zIndex(1f),
+            )
+        } else {
+            existing.setImage(image)
+            existing.position = centre
+            existing.setDimensions(s.widthM)
+            existing.bearing = s.bearingDeg
+        }
+
+        val trailPts = s.trail.map { LatLng(it[0], it[1]) }
+        if (trailLine == null && trailPts.size >= 2) {
+            trailLine = map.addPolyline(
+                PolylineOptions().color(0x8039A0ED.toInt()).width(6f).zIndex(2f),
+            )
+        }
+        trailLine?.points = trailPts
+
+        val pathPts = s.path.map { LatLng(it[0], it[1]) }
+        if (plannedLine == null && pathPts.size >= 2) {
+            plannedLine = map.addPolyline(
+                PolylineOptions().color(0xE67C4DFF.toInt()).width(9f).zIndex(3f),
+            )
+        }
+        plannedLine?.points = pathPts
     }
 
     private val connection = object : ServiceConnection {
