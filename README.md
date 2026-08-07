@@ -24,10 +24,10 @@ no subscription, no signal required. Built, printed, assembled, and walked with.
 
 | Name | Github |
 |---|---|
-| Rohin Sood | [_TODO_](https://github.com/rohinsood) |
-| Manuel Rodrigues | [_TODO_](https://github.com/MaRodriguezB777) |
-| Venkata Yaswanth Kanduri | [vkanduri](https://github.com/kvyaswanth) |
-| Noah Zhang | [_TODO_](https://github.com/iujab) |
+| Rohin Sood | https://github.com/rohinsood |
+| Manuel Rodrigues | https://github.com/MaRodriguezB777 |
+| Venkata Yaswanth Kanduri | https://github.com/kvyaswanth |
+| Noah Zhang | https://github.com/iujab |
 
 ---
 
