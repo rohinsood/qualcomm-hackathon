@@ -47,7 +47,7 @@ MAX_BUFFER = 64 * 1024
 # Sketch-side convention for set_wheel(dir, speed).
 DIRECTIONS = {"left": -1, "stop": 0, "right": 1}
 ACTION_NAMES = {value: name for name, value in DIRECTIONS.items()}
-DEFAULT_SPEED = 3    # phone commands without a speed
+DEFAULT_SPEED = 5    # phone commands without a speed: full scale
 DASHBOARD_SPEED = 5  # dashboard buttons always drive full scale
 
 ui = WebUI()
