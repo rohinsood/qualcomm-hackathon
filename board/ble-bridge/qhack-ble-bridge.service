@@ -1,0 +1,10 @@
+[Unit]
+Description=BLE bridge: Distance Watch app <-> phone (Nordic UART Service)
+
+[Service]
+ExecStart=/usr/bin/python3 /home/arduino/dev/qhackcane/ble-bridge/ble_bridge.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
