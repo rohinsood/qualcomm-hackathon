@@ -54,6 +54,9 @@ class RouteTracker(private val route: Route) {
         val remainingMeters: Double,
         val event: Event?,
         val cueText: String?,
+        /** Compass bearing to the look-ahead point — lets the caller keep
+         *  the goal angle live against a fast heading between GPS fixes. */
+        val targetBearingDeg: Float = Float.NaN,
     )
 
     // Local meter frame around the first route point
@@ -162,7 +165,7 @@ class RouteTracker(private val route: Route) {
             }
         }
 
-        return Update(steer, remaining, event, cue)
+        return Update(steer, remaining, event, cue, bearingToTarget.toFloat())
     }
 
     private fun pointAlong(hintIndex: Int, targetDist: Double): Pair<Double, Double> {
