@@ -33,6 +33,7 @@ import dev.quad.shepherd.feedback.VoiceFetcher
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.guidance.SceneBlackboard
 import dev.quad.shepherd.guidance.SteerFusion
+import dev.quad.shepherd.guidance.ThirdsGuidance
 import dev.quad.shepherd.llm.GenieChat
 import dev.quad.shepherd.llm.OcrReader
 import dev.quad.shepherd.bt.CaneBleLink
@@ -67,6 +68,9 @@ class ShepherdService : LifecycleService() {
         private const val TAG = "ShepherdService"
         private const val CHANNEL_ID = "shepherd"
         private const val NOTIFICATION_ID = 1
+
+        /** A standing STOP is re-spoken this often. */
+        private const val STOP_REPEAT_MS = 4000L
 
         /** Words in a question that trigger a one-shot OCR pass. */
         private val OCR_TRIGGERS = listOf(
@@ -114,6 +118,11 @@ class ShepherdService : LifecycleService() {
     private val segEngineAde = SegEngine(SegEngine.ADE)
     private val pathPipeline = PathPipeline()
     private val guidanceEngine = GuidanceEngine() // v1 fallback when no depth model
+
+    /** Screen-thirds obstacle override + spoken left/right/stop cues. */
+    private val thirds = ThirdsGuidance()
+    @Volatile private var lastSpokenThirds = ThirdsGuidance.Decision.STRAIGHT
+    private var lastThirdsSpokeAt = 0L
     private val blackboard = SceneBlackboard()
     val genieChat = GenieChat()
     lateinit var speech: SpeechFeedback
@@ -403,22 +412,24 @@ class ShepherdService : LifecycleService() {
             }
         }
         blackboard.updateFrame(detections, result.frameWidth)
-        blackboard.updateGuidance(guidance)
-        // Nothing about obstacles is spoken; danger onsets are logged so the
-        // companion can talk about them when asked
-        if (guidance.severity == GuidanceEngine.Severity.DANGER &&
-            lastSeverity != GuidanceEngine.Severity.DANGER
-        ) {
-            val action = when {
-                guidance.steer < -0.2f -> "steering left"
-                guidance.steer > 0.2f -> "steering right"
-                else -> "stopping"
-            }
-            blackboard.noteAlert("danger: ${guidance.nearestLabel ?: "obstacle"}, $action", now)
-            DebugLog.d("GUID", "danger: ${guidance.nearestLabel ?: "obstacle"} → $action")
-        }
-        lastSeverity = guidance.severity
-        blackboard.navSummary = compassNav.summary
+
+        // Screen-thirds obstacle logic (qhackgps semantics): the MIDDLE
+        // third decides whether forward is possible — a near detection or
+        // too few walkable pixels there blocks it — and while blocked, the
+        // outer third with the most walkable pixels / fewest near objects
+        // is the dodge, spoken aloud. STRAIGHT hands back to the route
+        // guidance, so this is an override, not a replacement.
+        val thirdsDecision = thirds.update(
+            detections.map {
+                ThirdsGuidance.obstacle(
+                    it.x1, it.x2, it.y1, it.y2,
+                    result.frameWidth, result.frameHeight, it.distanceMeters,
+                )
+            },
+            pathPipeline.segClearance,
+        )
+        announceThirds(thirdsDecision, now)
+
         // With the polar plan active the compass goal is already inside the
         // planner's cost function; the additive fusion only serves the
         // v1 fallback path
@@ -426,12 +437,61 @@ class ShepherdService : LifecycleService() {
         else guidance.copy(
             steer = SteerFusion.fuse(guidance, compassNav.goalAngleDeg?.let { it / 60f }),
         )
-        aggregator.offer(fused)
-        actuator.sendGuidance(fused)
+        // The thirds override outranks the planner while an obstruction
+        // stands; everything downstream (blackboard, wheel, UI) sees ONE
+        // coherent decision — the same one the voice just spoke.
+        val outbound = if (thirdsDecision == ThirdsGuidance.Decision.STRAIGHT) fused
+        else thirds.toGuidance(thirdsDecision, pathPipeline.segClearance)
+
+        blackboard.updateGuidance(outbound)
+        if (outbound.severity == GuidanceEngine.Severity.DANGER &&
+            lastSeverity != GuidanceEngine.Severity.DANGER
+        ) {
+            val action = when {
+                outbound.steer < -0.2f -> "steering left"
+                outbound.steer > 0.2f -> "steering right"
+                else -> "stopping"
+            }
+            blackboard.noteAlert("danger: ${outbound.nearestLabel ?: "obstacle"}, $action", now)
+            DebugLog.d("GUID", "danger: ${outbound.nearestLabel ?: "obstacle"} → $action")
+        }
+        lastSeverity = outbound.severity
+        blackboard.navSummary = compassNav.summary
+        aggregator.offer(outbound)
+        actuator.sendGuidance(outbound)
         // Haptics deliberately NOT driven from vision: the only buzz is the
         // cane sensor's STOP (see startCaneLink) so a vibration always
         // means "obstacle at the cane", never routine steering
-        uiListener?.onFrame(result.copy(detections = detections), fused)
+        uiListener?.onFrame(result.copy(detections = detections), outbound)
+    }
+
+    /**
+     * Speak thirds transitions the way qhackgps signals them: "left" /
+     * "right" / "stop" when a dodge starts or changes, "straight" when the
+     * way clears. Silent at rest — the initial STRAIGHT is never narrated,
+     * and STOP re-announces every few seconds while it persists because a
+     * blind user cannot see that the instruction still stands.
+     */
+    private fun announceThirds(d: ThirdsGuidance.Decision, now: Long) {
+        if (!guidanceEnabled) return
+        val changed = d != lastSpokenThirds
+        val stopRefresh = d == ThirdsGuidance.Decision.STOP &&
+            now - lastThirdsSpokeAt >= STOP_REPEAT_MS
+        if (!changed && !stopRefresh) return
+        lastSpokenThirds = d
+        lastThirdsSpokeAt = now
+        val word = when (d) {
+            ThirdsGuidance.Decision.LEFT -> "Left"
+            ThirdsGuidance.Decision.RIGHT -> "Right"
+            ThirdsGuidance.Decision.STOP -> "Stop"
+            ThirdsGuidance.Decision.STRAIGHT -> "Straight"
+        }
+        DebugLog.d("THIRD", "→ $word")
+        speech.announce(
+            word,
+            interrupt = true,
+            urgent = d == ThirdsGuidance.Decision.STOP,
+        )
     }
 
     // ---- Conversation ---------------------------------------------------
