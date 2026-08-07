@@ -64,6 +64,8 @@ class MainActivity : AppCompatActivity() {
     private var positionMarker: Marker? = null
     private var destMarker: Marker? = null
     private var beeline: com.google.android.gms.maps.model.Polyline? = null
+    private var routeLine: com.google.android.gms.maps.model.Polyline? = null
+    private var routePointCount = 0
 
     /** Facing-direction arrow for the user marker (rotated by heading). */
     private val arrowIcon by lazy {
@@ -114,6 +116,9 @@ class MainActivity : AppCompatActivity() {
             bound = true
             s.guidanceEnabled = binding.audioToggle.isChecked
             s.setDepthDebug(binding.depthToggle.isChecked)
+            // The service outlives the activity: show ITS nav mode
+            binding.navModeToggle.isChecked =
+                s.nav.mode == dev.quad.shepherd.nav.CompassNav.Mode.OUTDOOR
             s.setUiListener(uiListener)
             s.attachPreview(binding.previewView.surfaceProvider)
         }
@@ -193,6 +198,13 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.setOnLongClickListener {
             benchLlm()
             true
+        }
+        // Outdoor = Google walking routes; off = indoor straight-line mode
+        binding.navModeToggle.setOnCheckedChangeListener { _, checked ->
+            service?.nav?.setMode(
+                if (checked) dev.quad.shepherd.nav.CompassNav.Mode.OUTDOOR
+                else dev.quad.shepherd.nav.CompassNav.Mode.INDOOR,
+            )
         }
         binding.audioToggle.isChecked = true
         binding.audioToggle.setOnCheckedChangeListener { _, checked ->
@@ -400,7 +412,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Destination + beeline (redrawn when it changes)
+        // Destination + path (redrawn when it changes)
         val destKey = dest?.let { doubleArrayOf(it.latitude, it.longitude) }
         if (!destKey.contentEquals(drawnRoute?.getOrNull(0))) {
             drawnRoute = destKey?.let { listOf(it) }
@@ -408,15 +420,38 @@ class MainActivity : AppCompatActivity() {
             destMarker = null
             beeline?.remove()
             beeline = null
+            routeLine?.remove()
+            routeLine = null
+            routePointCount = 0
             if (dest != null) {
                 destMarker = map.addMarker(MarkerOptions().position(dest).title("Destination"))
             }
         }
         if (dest != null && here != null) {
-            beeline?.let { it.points = listOf(here, dest) } ?: run {
-                beeline = map.addPolyline(
-                    PolylineOptions().add(here, dest).color(0xFF2196F3.toInt()).width(8f)
-                )
+            val route = nav.routePoints
+            if (route != null && route.size >= 2) {
+                // Outdoor mode: the actual walking route from Google
+                if (routeLine == null || routePointCount != route.size) {
+                    routeLine?.remove()
+                    routeLine = map.addPolyline(
+                        PolylineOptions()
+                            .addAll(route.map { LatLng(it[0], it[1]) })
+                            .color(0xFF2196F3.toInt()).width(8f)
+                    )
+                    routePointCount = route.size
+                }
+                beeline?.remove()
+                beeline = null
+            } else {
+                // Indoor mode (or no route): the compass beeline
+                routeLine?.remove()
+                routeLine = null
+                routePointCount = 0
+                beeline?.let { it.points = listOf(here, dest) } ?: run {
+                    beeline = map.addPolyline(
+                        PolylineOptions().add(here, dest).color(0xFF2196F3.toInt()).width(8f)
+                    )
+                }
             }
         }
     }

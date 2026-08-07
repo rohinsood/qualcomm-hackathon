@@ -423,6 +423,17 @@ class ShepherdService : LifecycleService() {
      */
     fun ask(text: String, onDone: (Boolean) -> Unit) {
         // Navigation commands bypass the SLM entirely
+        val lowerAll = text.lowercase()
+        if (lowerAll.contains("indoor mode") || lowerAll.contains("inside mode")) {
+            compassNav.setMode(dev.quad.shepherd.nav.CompassNav.Mode.INDOOR)
+            onDone(true)
+            return
+        }
+        if (lowerAll.contains("outdoor mode") || lowerAll.contains("outside mode")) {
+            compassNav.setMode(dev.quad.shepherd.nav.CompassNav.Mode.OUTDOOR)
+            onDone(true)
+            return
+        }
         NAV_START.find(text.trim())?.let { m ->
             val dest = m.groupValues[1].trim()
                 .trimEnd('.', '!', '?', ',')
