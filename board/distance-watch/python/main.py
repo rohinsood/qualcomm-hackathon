@@ -62,7 +62,8 @@ MAX_BUFFER = 64 * 1024
 DIRECTIONS = {"left": -1, "stop": 0, "right": 1}
 ACTION_NAMES = {value: name for name, value in DIRECTIONS.items()}
 # Every spin runs at full scale (100% duty) — no graded speeds; phone/daemon
-# speed hints are ignored. The sketch's leaky integrator still ramps smoothly.
+# speed hints are ignored, and the sketch also pins duty to 100% no matter
+# what arrives on the wire (no ramp: commands step straight to full).
 WHEEL_SPEED = 5
 
 # Deterministic on-board obstacle avoidance — engaged only while NO phone is
