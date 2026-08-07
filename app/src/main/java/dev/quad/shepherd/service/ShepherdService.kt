@@ -115,6 +115,16 @@ class ShepherdService : LifecycleService() {
     private val segEngine = SegEngine(SegEngine.FFNET)
     private val segEngineAde = SegEngine(SegEngine.ADE)
     private val pathPipeline = PathPipeline()
+
+    /** Pose and depth for the areamap: ARCore, with dead reckoning behind it. */
+    private val poseProvider by lazy { dev.quad.shepherd.pose.PoseProvider(this) }
+
+    /** The world-anchored map and its planner. */
+    val areaMapper = dev.quad.shepherd.map.AreaMapper()
+    private var lastFedLat = Double.NaN
+    private var lastFedLng = Double.NaN
+    private var lastRouteRef: List<DoubleArray>? = null
+    private var headingSeeded = false
     private val guidanceEngine = GuidanceEngine() // v1 fallback when no depth model
     private val blackboard = SceneBlackboard()
     val genieChat = GenieChat()
@@ -200,7 +210,124 @@ class ShepherdService : LifecycleService() {
         }
         startCaneLink()
         startMotorLoop()
+        startAreaMap()
         startPipeline()
+    }
+
+    /**
+     * The areamap loop. ARCore pushes a pose (and, when it has one, a
+     * metric depth frame); every observation is folded into the world map,
+     * the global planner routes toward the route's look-ahead point, and
+     * the reflex planner runs on an ego view cut out of the same map.
+     *
+     * This is where the guidance chain is driven from when ARCore is
+     * active, because CameraX cannot be: the two cannot both hold the back
+     * camera open, and ARCore needs it for tracking.
+     */
+    private fun startAreaMap() {
+        if (!Loadout.ARCORE) return
+        poseProvider.listener = object : dev.quad.shepherd.pose.PoseProvider.Listener {
+            override fun onPose(
+                pose: dev.quad.shepherd.world.Pose2d,
+                pitchRad: Float,
+                rollRad: Float,
+                depthMeters: FloatArray?,
+                depthWidth: Int,
+                depthHeight: Int,
+                depthFx: Float,
+            ) {
+                feedNavigationInto(pose)
+                areaMapper.onPose(
+                    pose, pitchRad, rollRad, depthMeters, depthWidth, depthHeight, depthFx,
+                )
+                driveGuidance(pose)
+            }
+
+            override fun onEpochChanged(epoch: Int) {
+                DebugLog.d("MAP", "AR frame restarted (epoch $epoch) - map dropped")
+                headingSeeded = false
+                lastFedLat = Double.NaN
+                lastRouteRef = null
+            }
+        }
+        poseProvider.start()
+        // Dead reckoning has no cadence of its own, so it is pumped here;
+        // without this, guidance would simply stop the moment ARCore lost
+        // tracking rather than degrading.
+        lifecycleScope.launch {
+            while (true) {
+                delay(200L)
+                poseProvider.tickDeadReckoning()?.let { driveGuidance(it) }
+            }
+        }
+    }
+
+    /** Push GPS, heading and the live route into the areamap's anchor. */
+    private fun feedNavigationInto(pose: dev.quad.shepherd.world.Pose2d) {
+        val fix = compassNav.lastLatLng
+        if (fix != null && (fix[0] != lastFedLat || fix[1] != lastFedLng)) {
+            lastFedLat = fix[0]
+            lastFedLng = fix[1]
+            val acc = compassNav.lastAccuracyM
+            areaMapper.onGpsFix(pose, fix[0], fix[1], if (acc.isNaN()) 12f else acc)
+        }
+        if (!headingSeeded && !compassNav.headingDeg.isNaN()) {
+            headingSeeded = true
+            areaMapper.seedHeading(pose, compassNav.headingDeg)
+        }
+        val route = compassNav.routePoints
+        if (route !== lastRouteRef) {
+            lastRouteRef = route
+            areaMapper.setRoute(route)
+        }
+        compassNav.destination.let { d ->
+            areaMapper.setDestination(d?.get(0), d?.get(1))
+        }
+    }
+
+    /**
+     * One guidance decision from the areamap: the global plan supplies the
+     * goal angle, the reflex planner bends it around whatever is close,
+     * and the aggregator turns that into a motor letter as before.
+     */
+    private fun driveGuidance(pose: dev.quad.shepherd.world.Pose2d) {
+        // The global plan owns the heading; the compass bearing is the
+        // fallback for before the map has anything useful in it.
+        val planned = areaMapper.goalAngleDeg
+        pathPipeline.goalAngleDeg = (planned ?: compassNav.goalAngleDeg)?.coerceIn(-90f, 90f)
+        pathPipeline.headingDeg = compassNav.headingDeg
+
+        // The reflex layer reads the SAME map, rotated into the camera's
+        // frame, instead of accumulating its own copy
+        pathPipeline.grid.loadFrom(
+            areaMapper.egoView(
+                pose,
+                pathPipeline.grid.cellsWide,
+                pathPipeline.grid.cellsDeep,
+                pathPipeline.grid.cellMeters,
+            )
+        )
+        val plan = pathPipeline.plan()
+        val guidance = plan.guidance
+
+        blackboard.updateGuidance(guidance)
+        blackboard.navSummary = compassNav.summary
+        aggregator.offer(guidance)
+        actuator.sendGuidance(guidance)
+
+        if (plan.stop != lastPlanStop) {
+            lastPlanStop = plan.stop
+            if (plan.stop) DebugLog.d("PLAN", "no corridor - STOP")
+        }
+        if (plan.avoiding != lastPlanAvoiding) {
+            lastPlanAvoiding = plan.avoiding
+            DebugLog.d(
+                "PLAN",
+                if (plan.avoiding) "obstacle on the path - deviating"
+                else "path clear - back on route",
+            )
+        }
+        visionLabel = poseProvider.status() + " · " + areaMapper.debugLine()
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -250,6 +377,10 @@ class ShepherdService : LifecycleService() {
         caneLink.start()
         lifecycleScope.launch {
             caneLink.reading.collect { r ->
+                // Into the AREAMAP, not the ego grid: the grid is now
+                // overwritten from the map every frame, so anything stamped
+                // straight into it would be erased before it was read.
+                areaMapper.onCaneDistance(poseProvider.pose, r?.mm, r?.present == true)
                 if (r?.present == true && r.mm != null) {
                     pathPipeline.grid.markNearObstacle(r.mm / 1000f)
                     // THE haptic signal: obstacle at the cane -> STOP buzz,
@@ -320,7 +451,17 @@ class ShepherdService : LifecycleService() {
             }
             DebugLog.d("VIS", visionLabel)
             if (!notGrantedLocation()) compassNav.startPassive()
-            bindCamera()
+            // ARCore and CameraX cannot both hold the back camera open, and
+            // ARCore needs it to track. With the model stack disabled the
+            // analyzer has nothing left to do anyway, so it stands down and
+            // the areamap loop drives guidance instead. The consequence is
+            // real and worth knowing: there is no CameraX preview in this
+            // mode, which is why the UI is map-first.
+            if (Loadout.ARCORE) {
+                DebugLog.d("VIS", "CameraX stood down - ARCore owns the camera")
+            } else {
+                bindCamera()
+            }
             warmChat()
         }
     }
@@ -575,6 +716,7 @@ class ShepherdService : LifecycleService() {
         (getSystemService(SENSOR_SERVICE) as SensorManager)
             .unregisterListener(gravityListener)
         compassNav.stop(announce = false)
+        if (Loadout.ARCORE) poseProvider.stop()
         caneLink.shutdown()
         genieChat.close()
         speech.shutdown()

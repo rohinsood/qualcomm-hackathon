@@ -67,6 +67,12 @@ class CompassNav(
     @Volatile var lastLatLng: DoubleArray? = null
         private set
 
+    /** Horizontal accuracy of the last fix, metres; NaN when unknown.
+     *  The areamap's ENU alignment weights fixes by this, so a 20 m
+     *  urban-canyon fix cannot drag the frame bearing around. */
+    @Volatile var lastAccuracyM: Float = Float.NaN
+        private set
+
     @Volatile var headingDeg = Float.NaN
         private set
 
@@ -216,6 +222,7 @@ class CompassNav(
 
     private fun onFix(location: Location) {
         lastLatLng = doubleArrayOf(location.latitude, location.longitude)
+        lastAccuracyM = if (location.hasAccuracy()) location.accuracy else Float.NaN
         if (declination == 0f) {
             declination = GeomagneticField(
                 location.latitude.toFloat(), location.longitude.toFloat(),

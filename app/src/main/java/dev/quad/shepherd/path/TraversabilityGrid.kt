@@ -215,6 +215,23 @@ class TraversabilityGrid(
         groundOffsetInit = false
     }
 
+    /**
+     * Overwrite every cell from an externally computed ego view.
+     *
+     * The areamap supersedes this class's own accumulation: it holds the
+     * same evidence in fixed world coordinates, so a window rotated out of
+     * it is this grid's content done properly — in particular it is still
+     * correct after the user turns around, which self-accumulated content
+     * is not. [PolarPlanner] and everything downstream stay untouched;
+     * only where the numbers come from changes.
+     */
+    fun loadFrom(src: FloatArray) {
+        require(src.size == logOdds.size) {
+            "ego view ${src.size} does not match grid ${logOdds.size}"
+        }
+        System.arraycopy(src, 0, logOdds, 0, src.size)
+    }
+
     private fun decay() {
         for (i in logOdds.indices) logOdds[i] *= DECAY
     }
