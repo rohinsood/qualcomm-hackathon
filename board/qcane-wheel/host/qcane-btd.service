@@ -1,0 +1,26 @@
+# Bluetooth front end for the qcane-wheel Arduino App.
+#
+# Install as a *user* service (no root needed):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/ArduinoApps/qcane-wheel/host/qcane-btd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now qcane-btd
+#   systemctl --user status qcane-btd
+#   journalctl --user -u qcane-btd -f
+#
+# So it survives logout / starts at boot:
+#   loginctl enable-linger arduino
+
+[Unit]
+Description=QCane wheel Bluetooth daemon
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/ArduinoApps/qcane-wheel/host/qcane_btd.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
