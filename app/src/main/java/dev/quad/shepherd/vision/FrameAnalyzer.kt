@@ -75,6 +75,14 @@ class FrameAnalyzer(
          */
         private const val MIN_FRAME_INTERVAL_MS = 90L
 
+        /**
+         * Detection interval. Steering no longer uses YOLO (the grid does
+         * that job); boxes only feed labels, the blackboard, and the depth
+         * scale calibration — 1 Hz is plenty, and the freed GPU time goes
+         * to the depth model, which IS latency-critical.
+         */
+        private const val DETECT_INTERVAL_MS = 1000L
+
         /** Fixed color ramp range for the debug view (meters). */
         private const val DEBUG_NEAR_M = 0.3f
         private const val DEBUG_FAR_M = 6.0f
@@ -93,8 +101,26 @@ class FrameAnalyzer(
 
     private var lastRunAt = 0L
     private var lastDepthAt = 0L
+    private var lastDetectAt = 0L
+    private var lastModelSpace: List<Detection> = emptyList()
+    private var lastDetectLatency = 0L
     private var lastColumnDistances: FloatArray? = null
     private var lastDepthDebug: Bitmap? = null
+
+    /**
+     * The ADE20K ensemble member runs on its own thread: in NPU/CPU mixed
+     * mode it is far slower than FFNet, and inline it stalled the depth →
+     * grid → plan hot path. Walkability is soft evidence, so a mask a few
+     * hundred ms stale is fine. The engine reuses its output buffer, so the
+     * worker publishes a copy.
+     */
+    private val adeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ade-seg").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
+    @Volatile private var adeBusy = false
+    @Volatile private var lastAdeSeg: ByteArray? = null
+    @Volatile private var lastAdeMs = 0L
+    private var timeLogCounter = 0
 
     override fun analyze(image: ImageProxy) {
         val nowMs = SystemClock.elapsedRealtime()
@@ -139,11 +165,19 @@ class FrameAnalyzer(
         }
         canvas.drawBitmap(upright, m, null)
 
-        fillTensor(letterboxBitmap)
-
-        val t0 = SystemClock.elapsedRealtime()
-        val modelSpace = engine.detect(inputBuffer)
-        val detectLatency = SystemClock.elapsedRealtime() - t0
+        // Detection at ~1 Hz: it only feeds labels / blackboard / scale
+        // calibration; the grid owns steering. Between runs the previous
+        // boxes are reused.
+        val runDetect = nowMs - lastDetectAt >= DETECT_INTERVAL_MS
+        if (runDetect) {
+            fillTensor(letterboxBitmap)
+            val t0 = SystemClock.elapsedRealtime()
+            lastModelSpace = engine.detect(inputBuffer)
+            lastDetectLatency = SystemClock.elapsedRealtime() - t0
+            lastDetectAt = nowMs
+        }
+        val modelSpace = lastModelSpace
+        val detectLatency = lastDetectLatency
 
         // Dense metric depth, time-gated: walls don't move at frame rate
         val depth = if (
@@ -152,12 +186,17 @@ class FrameAnalyzer(
         ) {
             depthEngine.analyze(letterboxBitmap)?.also {
                 lastDepthAt = SystemClock.elapsedRealtime()
+                // The letterbox bars are black padding, yet the depth model
+                // hallucinates geometry for them (up to 25% of the square!)
+                // — poison for the grid and the ground estimate. Mask them.
+                maskLetterboxBars(it, padX, padY)
             }
         } else null
 
         // Scale refinement: untruncated detections with a pinhole distance
-        // give (model meters, reference meters) pairs
-        if (depth != null) {
+        // give (model meters, reference meters) pairs. Only when the boxes
+        // are from THIS frame — stale boxes against fresh depth mislead.
+        if (depth != null && runDetect) {
             val toDepth = depth.size.toFloat() / size
             for (d in modelSpace) {
                 val est = DistanceEstimator.estimate(d.label, d.height) ?: continue
@@ -169,6 +208,8 @@ class FrameAnalyzer(
             }
         }
 
+        var ffnetMs = 0L
+        var gridMs = 0L
         if (depth != null) {
             val near = depth.columnNearField(GuidanceEngine.NUM_COLUMNS)
             lastColumnDistances = FloatArray(near.size) { c ->
@@ -179,28 +220,47 @@ class FrameAnalyzer(
             } else null
 
             // ---- v2: fold this depth frame into the traversability grid.
-            // Segmentation is an ENSEMBLE: FFNet (outdoor expert) + the
-            // ADE20K member (knows floors); a pixel is walkable when either
-            // model votes for it.
+            // Segmentation is an ENSEMBLE: FFNet (outdoor expert, inline —
+            // ~3 ms on the NPU) + the ADE20K member (knows floors, async);
+            // a pixel is walkable when either model votes for it.
             path?.let { p ->
                 val engA = segEngine
                 val engB = segEngine2
+                val tSeg = SystemClock.elapsedRealtime()
                 val segA = engA?.segment(upright)
-                if (segA != null && engA != null) {
+                ffnetMs = SystemClock.elapsedRealtime() - tSeg
+                if (engB != null && !adeBusy) {
+                    adeBusy = true
+                    val frameForAde = upright // fresh bitmap, read-only use
+                    adeExecutor.execute {
+                        try {
+                            val t = SystemClock.elapsedRealtime()
+                            val r = engB.segment(frameForAde)
+                            lastAdeMs = SystemClock.elapsedRealtime() - t
+                            if (r != null) lastAdeSeg = r.copyOf()
+                        } finally {
+                            adeBusy = false
+                        }
+                    }
+                }
+                val tGrid = SystemClock.elapsedRealtime()
+                val merged = mergedWalkable(
+                    segA, engA, lastAdeSeg, engB,
+                    depth.size, padX, padY, scale, upright,
+                )
+                // The Wayfinder columns follow the ENSEMBLE view: FFNet
+                // alone is out-of-domain indoors and steered the fallback
+                // toward Cityscapes hallucinations.
+                if (merged != null) {
+                    p.segClearance =
+                        WalkableColumns.clearanceFromMask(merged, depth.size, depth.size)
+                } else if (segA != null && engA != null) {
                     p.segClearance = WalkableColumns.clearance(
                         segA, engA.outW, engA.outH, engA.walkable,
                     )
                 }
-                val segB = engB?.segment(upright)
-                p.updateGrid(
-                    metricDepth(depth),
-                    depth.size,
-                    depth.size,
-                    mergedWalkable(
-                        segA, engA, segB, engB,
-                        depth.size, padX, padY, scale, upright,
-                    ),
-                )
+                p.updateGrid(metricDepth(depth), depth.size, depth.size, merged)
+                gridMs = SystemClock.elapsedRealtime() - tGrid
             }
         }
         if (!depthDebugEnabled) lastDepthDebug = null
@@ -230,9 +290,26 @@ class FrameAnalyzer(
         }
 
         // v2: plan every frame on the persistent grid (cheap raycasts)
+        val tPlan = SystemClock.elapsedRealtime()
         val plan = path?.plan()
+        val planMs = SystemClock.elapsedRealtime() - tPlan
         // Always rendered: the map-first UI floats the BEV grid over the map
         val gridDebug = path?.grid?.renderDebug()
+
+        if (depth != null && ++timeLogCounter % 5 == 0) {
+            android.util.Log.i(
+                "ShepherdTime",
+                "yolo=${detectLatency}ms(1Hz) depth=${depth.latencyMs}ms " +
+                    "ffnet=${ffnetMs}ms ade=${lastAdeMs}ms(async) " +
+                    "grid=${gridMs}ms plan=${planMs}ms " +
+                    "e2e=${SystemClock.elapsedRealtime() - nowMs}ms " +
+                    "ground=%.2fm scale=%.2f steer=%.0f°".format(
+                        path?.grid?.groundOffsetEma ?: 0f,
+                        calibrator.currentScale,
+                        plan?.chosenAngleDeg ?: 0f,
+                    ),
+            )
+        }
 
         onResult(
             FrameResult(
@@ -253,6 +330,31 @@ class FrameAnalyzer(
                 gravityDeg = gravityDeg,
             )
         )
+    }
+
+    /**
+     * NaN out depth pixels that fall on the letterbox padding, so every
+     * consumer (grid projection, ground estimate, near-field columns, box
+     * medians) sees only real scene geometry. NaN sorts last and fails
+     * isFinite gates, so downstream percentile/median code degrades to
+     * "no signal" rather than garbage.
+     */
+    private fun maskLetterboxBars(dm: DepthEngine.DepthMap, padX: Float, padY: Float) {
+        val ds = dm.size
+        val rs = ds.toFloat() / size
+        val barX = kotlin.math.ceil(padX * rs).toInt().coerceIn(0, ds / 2)
+        val barY = kotlin.math.ceil(padY * rs).toInt().coerceIn(0, ds / 2)
+        if (barX == 0 && barY == 0) return
+        val map = dm.map
+        for (y in 0 until ds) {
+            val row = y * ds
+            if (y < barY || y >= ds - barY) {
+                java.util.Arrays.fill(map, row, row + ds, Float.NaN)
+            } else if (barX > 0) {
+                java.util.Arrays.fill(map, row, row + barX, Float.NaN)
+                java.util.Arrays.fill(map, row + ds - barX, row + ds, Float.NaN)
+            }
+        }
     }
 
     /** Depth map in meters (calibrator-refined; raw is already metric). */

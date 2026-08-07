@@ -65,6 +65,17 @@ class PolarPlanner(
     private var committedAngle = 0f
 
     /**
+     * The camera yawed by [deltaDeg] since the last plan (compass): rotate
+     * the committed heading the opposite way so it stays fixed in WORLD
+     * space. Without this the recommendation travels with the camera — the
+     * user turns toward the arrow and the arrow keeps pointing further the
+     * same way, forever.
+     */
+    fun rotateFrame(deltaDeg: Float) {
+        committedAngle = (committedAngle - deltaDeg).coerceIn(-90f, 90f)
+    }
+
+    /**
      * @param segClearance optional image-space walkable-fraction columns
      *   (Wayfinder signal) spanning [segFovDeg]; arbitrates STOP.
      */
@@ -138,8 +149,15 @@ class PolarPlanner(
                 var bestC = -1
                 var bestFrac = 0.55f // must be clearly open
                 for (c in seg.indices) {
-                    if (seg[c] > bestFrac) {
-                        bestFrac = seg[c]
+                    // Neighborhood mean: one noisy open column between two
+                    // walls must not win — a walkable direction is WIDE.
+                    val lo = maxOf(0, c - 1)
+                    val hi = min(seg.size - 1, c + 1)
+                    var acc = 0f
+                    for (k in lo..hi) acc += seg[k]
+                    val frac = acc / (hi - lo + 1)
+                    if (frac > bestFrac) {
+                        bestFrac = frac
                         bestC = c
                     }
                 }

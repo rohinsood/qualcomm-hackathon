@@ -314,7 +314,7 @@ class MainActivity : AppCompatActivity() {
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        if (!s.genieChat.ready) {
+        if (s.companionEnabled && !s.genieChat.ready) {
             if (!s.chatWarmingNow) s.warmChat()
             s.speech.announce(
                 s.genieChat.failure?.let { "Companion unavailable. $it" }

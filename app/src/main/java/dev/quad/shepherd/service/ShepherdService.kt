@@ -73,6 +73,13 @@ class ShepherdService : LifecycleService() {
             "read", "sign", "text", "written", "writing", "label", "menu", "says", "say on",
         )
 
+        /**
+         * The companion SLM is parked: the NPU/memory/thermal budget goes
+         * to perception instead. Voice NAV intents and OCR reading never
+         * touched the SLM and keep working. Flip to true to bring it back.
+         */
+        private const val COMPANION_ENABLED = false
+
         /** Spoken navigation commands, handled before the SLM sees them.
          *  Unanchored: "hey, can you take me to…" must match too. */
         private val NAV_START = Regex(
@@ -133,6 +140,10 @@ class ShepherdService : LifecycleService() {
     @Volatile var guidanceEnabled = true
     @Volatile var visionLabel = "starting"
         private set
+    @Volatile private var lastDepthMs = 0L
+
+    /** Whether the conversational SLM is part of this build's loadout. */
+    val companionEnabled: Boolean get() = COMPANION_ENABLED
     @Volatile private var chatWarming = false
     @Volatile private var latestFrame: Bitmap? = null
     @Volatile private var uiListener: UiListener? = null
@@ -225,7 +236,8 @@ class ShepherdService : LifecycleService() {
     }
 
     fun statusLine(latencyMs: Long, objects: Int): String =
-        getString(R.string.status_format, visionLabel, latencyMs, objects) + thermalNote
+        getString(R.string.status_format, visionLabel, latencyMs, objects) +
+            (if (lastDepthMs > 0) " · depth ${lastDepthMs}ms" else "") + thermalNote
 
     /** Cane BLE up: distance readings feed the grid's near-field ring. */
     private fun startCaneLink() {
@@ -330,6 +342,7 @@ class ShepherdService : LifecycleService() {
 
     /** Load the companion SLM onto the NPU in the background. */
     fun warmChat() {
+        if (!COMPANION_ENABLED) return
         if (chatWarming || genieChat.ready) return
         chatWarming = true
         lifecycleScope.launch(Dispatchers.IO) {
@@ -351,6 +364,9 @@ class ShepherdService : LifecycleService() {
         // Feed the compass-bearing goal to the planner for the next frame:
         // obstacles bend the path around, the bearing pulls it back on line
         pathPipeline.goalAngleDeg = compassNav.goalAngleDeg?.coerceIn(-90f, 90f)
+        // Heading anchors the planner's commitment in world space
+        pathPipeline.headingDeg = compassNav.headingDeg
+        if (result.depthLatencyMs > 0) lastDepthMs = result.depthLatencyMs
         // v2: guidance comes from the polar plan on the BEV grid; the v1
         // column engine remains the fallback when depth/seg models are absent
         val guidance = result.plan?.guidance ?: guidanceEngine.update(
@@ -427,6 +443,28 @@ class ShepherdService : LifecycleService() {
             DebugLog.d("NAV", "intent: stop")
             compassNav.stop()
             onDone(true)
+            return
+        }
+        if (!COMPANION_ENABLED) {
+            // No SLM on board — but reading text never needed it
+            val lower = text.lowercase()
+            if (OCR_TRIGGERS.any { lower.contains(it) }) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val seen = latestFrame?.let { ocr.read(it) }
+                    speech.announce(
+                        if (seen.isNullOrBlank()) "I don't see any text."
+                        else "It says: $seen",
+                        interrupt = true,
+                    )
+                    withContext(Dispatchers.Main) { onDone(true) }
+                }
+            } else {
+                speech.announce(
+                    "The companion is off. Say, take me to, followed by a place, to navigate.",
+                    interrupt = true,
+                )
+                onDone(true)
+            }
             return
         }
         DebugLog.d("CHAT", "→ SLM: ${text.take(50)}")
