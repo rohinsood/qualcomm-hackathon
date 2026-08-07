@@ -76,20 +76,74 @@ class CaneBleLink(private val context: Context) {
     private val writeQueue = ArrayDeque<String>()
     private var writeInFlight = false
 
+    /** When the in-flight write started; a write whose callback never comes
+     *  is the signature of a ZOMBIE link (dead peripheral, no disconnect
+     *  callback delivered — observed after a board-side MCU reflash). */
+    private var writeInFlightSince = 0L
+
+    /** Consecutive immediate writeCharacteristic failures — the other
+     *  zombie signature (gatt object alive, radio link gone). */
+    private var writeFailStreak = 0
+
     private val adapter
         get() = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
     init {
-        // Watchdog: whenever the link should be up but isn't, try again.
+        // Watchdog: whenever the link should be up but isn't, try again —
+        // and detect ZOMBIE links (connected-looking gatt that no longer
+        // delivers callbacks) via stalled writes, since Android does not
+        // always deliver STATE_DISCONNECTED (seen when the board reflashes
+        // its MCU, or after a Bluetooth toggle).
         scope.launch {
             while (isActive) {
                 delay(3000L)
+                var zombie = false
                 val kick = synchronized(this@CaneBleLink) {
+                    val stalled = gatt != null && writeInFlightSince > 0L &&
+                        android.os.SystemClock.elapsedRealtime() - writeInFlightSince >
+                        WRITE_STALL_MS
+                    if (stalled) {
+                        zombie = true
+                        stopScanLocked()
+                        teardownLocked()
+                    }
                     desired && gatt == null && !scanning
+                }
+                if (zombie) {
+                    Log.w(TAG, "cane: write stalled — link presumed dead, reconnecting")
+                    _state.value = CaneLinkState.Disconnected
+                    _reading.value = null
                 }
                 if (kick) startScan()
             }
         }
+        // A Bluetooth toggle must drop the link even if no GATT callback
+        // ever arrives for it.
+        ContextCompat.registerReceiver(
+            context,
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: android.content.Intent?) {
+                    val st = intent?.getIntExtra(
+                        android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1,
+                    )
+                    if (st == android.bluetooth.BluetoothAdapter.STATE_TURNING_OFF ||
+                        st == android.bluetooth.BluetoothAdapter.STATE_OFF
+                    ) {
+                        Log.d(TAG, "cane: bluetooth off — dropping link")
+                        synchronized(this@CaneBleLink) {
+                            stopScanLocked()
+                            teardownLocked()
+                        }
+                        _state.value = CaneLinkState.Disconnected
+                        _reading.value = null
+                    }
+                }
+            },
+            android.content.IntentFilter(
+                android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED,
+            ),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     /** Idempotent: keep the cane link up from now on. */
@@ -121,6 +175,9 @@ class CaneBleLink(private val context: Context) {
     fun write(text: String) {
         synchronized(this) {
             if (gatt == null || rxChar == null) return
+            // Motor letters are momentary — on a stalled link, shed the
+            // oldest instead of growing the queue without bound
+            if (writeQueue.size >= 8) writeQueue.removeFirst()
             writeQueue.addLast(text.take(20))
         }
         pumpWrites()
@@ -257,7 +314,11 @@ class CaneBleLink(private val context: Context) {
             c: BluetoothGattCharacteristic,
             status: Int,
         ) {
-            synchronized(this@CaneBleLink) { writeInFlight = false }
+            synchronized(this@CaneBleLink) {
+                writeInFlight = false
+                writeInFlightSince = 0L
+                if (status == BluetoothGatt.GATT_SUCCESS) writeFailStreak = 0
+            }
             pumpWrites()
         }
 
@@ -296,6 +357,8 @@ class CaneBleLink(private val context: Context) {
         rxChar = null
         writeQueue.clear()
         writeInFlight = false
+        writeInFlightSince = 0L
+        writeFailStreak = 0
         lineBuffer.setLength(0)
     }
 
@@ -339,6 +402,7 @@ class CaneBleLink(private val context: Context) {
             if (g == null || rx == null || writeInFlight || writeQueue.isEmpty()) null
             else {
                 writeInFlight = true
+                writeInFlightSince = android.os.SystemClock.elapsedRealtime()
                 rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 rx.value = writeQueue.removeFirst().toByteArray(Charsets.UTF_8)
                 g to rx
@@ -350,13 +414,36 @@ class CaneBleLink(private val context: Context) {
             } catch (_: Exception) {
                 false
             }
-            if (!ok) synchronized(this) { writeInFlight = false }
+            if (!ok) {
+                val dead = synchronized(this) {
+                    writeInFlight = false
+                    writeInFlightSince = 0L
+                    ++writeFailStreak >= WRITE_FAIL_STREAK
+                }
+                if (dead) {
+                    Log.w(TAG, "cane: $writeFailStreak straight write failures — reconnecting")
+                    synchronized(this) {
+                        writeFailStreak = 0
+                        stopScanLocked()
+                        teardownLocked()
+                    }
+                    _state.value = CaneLinkState.Disconnected
+                    _reading.value = null
+                    startScan()
+                }
+            }
         }
     }
 
     companion object {
         private const val TAG = "qhackGPS"
         private const val SCAN_WINDOW_MS = 10_000L
+
+        /** An in-flight write with no callback for this long = zombie link. */
+        private const val WRITE_STALL_MS = 4_000L
+
+        /** Consecutive immediate write failures before declaring it dead. */
+        private const val WRITE_FAIL_STREAK = 8
 
         /** Presence threshold (mm) pushed to the cane on connect. */
         const val OBSTACLE_THRESHOLD_MM = 1200
