@@ -28,6 +28,12 @@ logger = Logger("qcane-wheel")
 
 # An object closer than this counts as "in front" and lights the red lamp.
 PRESENCE_MAX_MM = 300.0
+# Hysteresis + debounce so an object hovering at the boundary cannot chatter
+# the vibro or the avoidance state machine: presence enters at the threshold
+# but releases only beyond threshold + margin, and either flip needs this many
+# consecutive qualifying readings (~40 ms at the sensor's ~50 Hz).
+PRESENCE_EXIT_MARGIN_MM = 100.0
+PRESENCE_DEBOUNCE_N = 2
 # No valid reading for this long -> report "nothing in range".
 STALE_AFTER_S = 1.0
 # Cap reading-driven websocket pushes (the sensor streams at up to ~50 Hz).
@@ -39,6 +45,13 @@ MOTOR_HISTORY_LEN = 240
 # Motor supply voltage wired into the Modulino Motors VM terminals. The module
 # cannot measure VM, so the dashboard computes applied volts as duty x VM.
 MOTOR_VM_V = 5.0
+
+# Parking-sensor vibro rhythm: the pulse period tightens linearly as the
+# obstacle closes from the presence threshold down to the stop tier, where
+# the buzz goes continuous ("stop now"). Period 0 is the continuous sentinel.
+VIBRO_PERIOD_FAR_MS = 700   # rhythm right at the threshold edge
+VIBRO_PERIOD_NEAR_MS = 250  # rhythm just above the stop tier
+VIBRO_STOP_TIER_MM = 250.0  # at/below this distance: continuous buzz
 
 # Bluetooth daemon (QCane GATT) unix socket, served by host/qcane_btd.py.
 SOCKET_PATH = os.environ.get("QCANE_BT_SOCKET", "/app/.run/qcane-bt.sock")
@@ -65,6 +78,14 @@ AUTO_AVOID_DIR = 1           # dodge side: +1 = right, -1 = left
 AUTO_RECOVER_FRACTION = 0.6  # counter-turn fraction of the avoid duration
 AUTO_RECOVER_MIN_S = 0.5
 AUTO_RECOVER_MAX_S = 4.0
+# Dodge strength scales with proximity (Shepherd's urgency curve): zero
+# urgency at the presence threshold, full at/below DODGE_MIN_MM, exponent
+# < 1 so the response ramps quickly as soon as something enters range.
+# Applies to phone AVOIDs and the on-board avoidance, re-scaled live while
+# the dodge runs.
+DODGE_MIN_MM = 200.0
+DODGE_URGENCY_EXP = 0.6
+DODGE_MIN_SPEED = 2
 
 ui = WebUI()
 
@@ -99,8 +120,11 @@ _state = {
 _auto_state = "idle"
 _auto_started = 0.0
 _auto_recover_until = 0.0
+_auto_avoid_speed = DASHBOARD_SPEED  # speed the current/last auto-avoid ran at
+_dodge_active = False  # last wheel command was an obstacle dodge (re-scalable)
 _events = deque(maxlen=EVENT_LOG_LEN)
 _motor_history = deque(maxlen=MOTOR_HISTORY_LEN)
+_presence_streak = 0  # +n consecutive "in" readings, -n "out"; 0 = nothing pending
 _last_reading_t = 0.0
 _bt_last_t = 0.0
 _last_emit_t = 0.0
@@ -286,16 +310,29 @@ def _sock_pump(timeout_s: float):
 
 def _push_actuators():
     """Send the desired actuator state to the sketch: wheel dir/speed and
-    vibro (= presence). Also re-sent from the watchdog as a heartbeat — the
-    sketch stops every output if these stop arriving (failsafe), and a
-    rebooted MCU re-converges on the next beat."""
+    vibro (= presence) with a distance-graded pulse period. Also re-sent from
+    the watchdog as a heartbeat — the sketch stops every output if these stop
+    arriving (failsafe), and a rebooted MCU re-converges on the next beat."""
     with _lock:
         motor = int(_state["motor"])
         speed = int(_state["wheel_speed"])
         vibro = 1 if _state["present"] else 0
+        mm = _state["mm"]
+        threshold = _state["threshold_mm"]
+    # Parking-sensor grading: 700 ms rhythm at the threshold edge tightening
+    # to 250 ms, then continuous (period 0) inside the stop tier.
+    period = VIBRO_PERIOD_FAR_MS
+    if mm is not None:
+        if mm <= VIBRO_STOP_TIER_MM:
+            period = 0
+        else:
+            urgency = (threshold - mm) / max(1.0, threshold - VIBRO_STOP_TIER_MM)
+            urgency = max(0.0, min(1.0, urgency))
+            period = int(VIBRO_PERIOD_FAR_MS
+                         - (VIBRO_PERIOD_FAR_MS - VIBRO_PERIOD_NEAR_MS) * urgency)
     try:
         Bridge.notify("set_wheel", motor, speed)
-        Bridge.notify("set_vibro", vibro)
+        Bridge.notify("set_vibro", vibro, period)
     except Exception:
         logger.debug("Failed to push actuator state to the sketch")
 
@@ -310,35 +347,53 @@ def _speed_for_deg(deg: int) -> int:
     return TURN_SPEED_TABLE[-1][1]
 
 
-def _steer_from_text(text: str):
-    """Map phone text to (dir, speed), or None for display-only text.
+def _dodge_speed() -> int:
+    """Wheel speed tier for an obstacle dodge, scaled by live proximity
+    (Shepherd's urgency curve): gentle lean at the threshold edge, full
+    speed by DODGE_MIN_MM. Full scale when there is no reading to judge by.
+    Takes _lock — never call while already holding it."""
+    with _lock:
+        mm = _state["mm"]
+        threshold = _state["threshold_mm"]
+    if mm is None:
+        return DASHBOARD_SPEED
+    span = max(1.0, threshold - DODGE_MIN_MM)
+    urgency = min(1.0, max(0.0, (threshold - mm) / span)) ** DODGE_URGENCY_EXP
+    return DODGE_MIN_SPEED + round((DASHBOARD_SPEED - DODGE_MIN_SPEED) * urgency)
 
-    "TURN LEFT 90" / "TURN RIGHT 35"  -> route turn, speed scaled by the angle
-    "AVOID LEFT" / anything with LEFT -> full-speed dodge (qhackGPS obstacle)
-    "CLEAR" / "STOP" / "STRAIGHT"     -> stop the wheel
+
+def _steer_from_text(text: str):
+    """Map phone text to (dir, speed, kind), or None for display-only text.
+
+    "TURN LEFT 90" / "TURN RIGHT 35"  -> ("turn")  speed scaled by the angle
+    "AVOID LEFT" / anything with LEFT -> ("dodge") caller re-scales by proximity
+    "CLEAR" / "STOP" / "STRAIGHT"     -> ("stop")  stop the wheel
     """
     t = text.upper()
     m = _TURN_RE.search(t)
     if m:
         deg = int(m.group(2)) if m.group(2) else 45
         direction = -1 if m.group(1) == "LEFT" else 1
-        return direction, _speed_for_deg(deg)
+        return direction, _speed_for_deg(deg), "turn"
     if "LEFT" in t:
-        return -1, DASHBOARD_SPEED
+        return -1, DASHBOARD_SPEED, "dodge"
     if "RIGHT" in t:
-        return 1, DASHBOARD_SPEED
+        return 1, DASHBOARD_SPEED, "dodge"
     if any(word in t for word in ("CLEAR", "STOP", "CENTER", "STRAIGHT")):
-        return 0, DASHBOARD_SPEED
+        return 0, DASHBOARD_SPEED, "stop"
     return None
 
 
-def _set_wheel(direction: int, speed: int, reason: str):
-    global _auto_state
+def _set_wheel(direction: int, speed: int, reason: str, dodge: bool = False):
+    global _auto_state, _dodge_active
     with _lock:
         changed = (_state["motor"] != direction
                    or _state["wheel_speed"] != speed)
         _state["motor"] = direction
         _state["wheel_speed"] = speed
+        # Track whether the current command is an obstacle dodge, so the
+        # watchdog can re-scale its speed as the obstacle closes or recedes.
+        _dodge_active = dodge
         # Any phone/dashboard command takes over from the on-board avoidance.
         if not reason.startswith("auto") and _auto_state != "idle":
             _auto_state = "idle"
@@ -353,8 +408,11 @@ def _auto_on_presence(present: bool):
     """Deterministic on-board avoidance state machine. Runs only while no
     phone is connected over BLE; every transition goes through _set_wheel
     with an "auto…" reason, so any real command cancels it instantly."""
-    global _auto_state, _auto_started, _auto_recover_until
+    global _auto_state, _auto_started, _auto_recover_until, _auto_avoid_speed
     now = time.monotonic()
+    # Proximity-scaled dodge tier; computed up front because _dodge_speed
+    # takes _lock itself (never nest the non-reentrant lock).
+    dodge_speed = _dodge_speed() if present else 0
     action = None
     with _lock:
         if present:
@@ -362,10 +420,12 @@ def _auto_on_presence(present: bool):
                     and _auto_state != "avoiding"):
                 _auto_state = "avoiding"
                 _auto_started = now
+                _auto_avoid_speed = dodge_speed
                 _state["auto_steer"] = "avoiding"
-                action = (AUTO_AVOID_DIR, DASHBOARD_SPEED,
+                action = (AUTO_AVOID_DIR, dodge_speed,
                           "auto-avoid: obstacle ahead, dodging "
-                          + ("right" if AUTO_AVOID_DIR > 0 else "left"))
+                          + ("right" if AUTO_AVOID_DIR > 0 else "left"),
+                          True)
         elif _auto_state == "avoiding":
             duration = now - _auto_started
             recover = max(AUTO_RECOVER_MIN_S,
@@ -374,10 +434,13 @@ def _auto_on_presence(present: bool):
             _auto_state = "recovering"
             _auto_recover_until = now + recover
             _state["auto_steer"] = "recovering"
-            action = (-AUTO_AVOID_DIR, DASHBOARD_SPEED,
-                      f"auto-recover: {recover:.1f}s counter-turn back to line")
+            # Counter-turn at the speed the avoid phase last ran at, so the
+            # return leg mirrors the outbound one.
+            action = (-AUTO_AVOID_DIR, _auto_avoid_speed,
+                      f"auto-recover: {recover:.1f}s counter-turn back to line",
+                      False)
     if action:
-        _set_wheel(*action)
+        _set_wheel(action[0], action[1], action[2], dodge=action[3])
 
 
 def _auto_tick(now: float):
@@ -397,13 +460,37 @@ def _auto_tick(now: float):
 
 def on_distance_reading(mm: float):
     """Bridge handler: one valid measurement (mm) pushed by the sketch."""
-    global _last_reading_t, _win_start_t, _win_count
+    global _last_reading_t, _win_start_t, _win_count, _presence_streak
     now = time.monotonic()
     _last_reading_t = now
     with _lock:
         was_present = _state["present"]
-        _state["mm"] = float(mm)
-        _state["present"] = float(mm) <= _state["threshold_mm"]
+        value = float(mm)
+        _state["mm"] = value
+        # Hysteresis + debounce: "in" at the threshold, "out" only beyond
+        # threshold + margin; the dead band between them cancels any pending
+        # flip. A flip lands after PRESENCE_DEBOUNCE_N consecutive qualifying
+        # readings, so boundary noise cannot chatter presence. (The watchdog's
+        # stale-expiry still clears presence unconditionally; the streak logic
+        # then demands a fresh debounce before re-entering.)
+        if value <= _state["threshold_mm"]:
+            if was_present:
+                _presence_streak = 0
+            else:
+                _presence_streak = _presence_streak + 1 if _presence_streak > 0 else 1
+                if _presence_streak >= PRESENCE_DEBOUNCE_N:
+                    _state["present"] = True
+                    _presence_streak = 0
+        elif value > _state["threshold_mm"] + PRESENCE_EXIT_MARGIN_MM:
+            if not was_present:
+                _presence_streak = 0
+            else:
+                _presence_streak = _presence_streak - 1 if _presence_streak < 0 else -1
+                if _presence_streak <= -PRESENCE_DEBOUNCE_N:
+                    _state["present"] = False
+                    _presence_streak = 0
+        else:
+            _presence_streak = 0
         _state["sensor_ok"] = True
         _state["count"] += 1
         present = _state["present"]
@@ -532,6 +619,22 @@ def watchdog():
         present_now = _state["present"]
     _auto_on_presence(present_now)
     _auto_tick(now)
+    # Shepherd-style urgency: while a dodge is running (on-board avoidance or
+    # a phone AVOID), re-scale the wheel speed as the obstacle closes in or
+    # backs away. _set_wheel's change-check keeps stable tiers silent.
+    with _lock:
+        auto_dodging = _auto_state == "avoiding"
+        dodging = auto_dodging or _dodge_active
+        dodge_dir = _state["motor"]
+        dodge_speed_now = _state["wheel_speed"]
+        dodge_mm = _state["mm"]
+    if dodging and present_now and dodge_dir != 0:
+        tier = _dodge_speed()
+        if tier != dodge_speed_now:
+            mm_txt = f"{dodge_mm:.0f} mm" if dodge_mm is not None else "no reading"
+            reason = (f"auto-dodge urgency update ({mm_txt})" if auto_dodging
+                      else f"dodge urgency update ({mm_txt})")
+            _set_wheel(dodge_dir, tier, reason, dodge=True)
     _push_actuators()
     _emit(force=True)
 
@@ -548,6 +651,8 @@ def set_threshold(payload: dict):
     with _lock:
         _state["threshold_mm"] = mm
         if _state["mm"] is not None:
+            # Plain compare on a manual threshold change; hysteresis/debounce
+            # governs the streaming path in on_distance_reading.
             _state["present"] = _state["mm"] <= mm
     _log_event(f"Presence threshold set to {mm:.0f} mm")
     return {"threshold_mm": mm}
@@ -555,8 +660,8 @@ def set_threshold(payload: dict):
 
 def set_phone_msg(payload: dict):
     """POST /api/phone {"text": "..."} — freeform text from the NUS side
-    channel. Steering keywords (left/right/clear/stop) also drive the wheel
-    at full speed; anything else is display-only."""
+    channel. Steering keywords (left/right/clear/stop) also drive the wheel;
+    dodges are re-scaled by live proximity. Anything else is display-only."""
     text = str(payload.get("text", "")).strip()[:200]
     with _lock:
         _state["phone_msg"] = text or None
@@ -564,7 +669,11 @@ def set_phone_msg(payload: dict):
         _log_event(f"Phone (NUS): {text!r}")
         command = _steer_from_text(text)
         if command is not None:
-            _set_wheel(command[0], command[1], f"NUS text {text!r}")
+            direction, speed, kind = command
+            if kind == "dodge":
+                speed = _dodge_speed()
+            _set_wheel(direction, speed, f"NUS text {text!r}",
+                       dodge=(kind == "dodge"))
     _emit(force=True)
     return {"ok": True}
 

@@ -9,8 +9,9 @@ talking over the Nordic UART bridge.
 - **Wheel**: spins left/right on phone command or the dashboard buttons
   (dashboard always drives full scale). The 13×8 LED matrix mirrors the
   motion.
-- **Vibro buzz** (250 ms pulse every 500 ms) while an object is closer than
-  the presence threshold (default 300 mm) — haptic obstacle alert.
+- **Vibro buzz**, parking-sensor style: pulses start at a 700 ms rhythm at
+  the presence threshold (default 300 mm) and tighten to 250 ms as the
+  obstacle closes; at/below 250 mm the buzz goes **continuous** ("stop now").
 - **QCane Link dashboard** (port 7000): per-Modulino cards — distance
   readings (mm/cm, rate, age), motor telemetry with **live graphs** of
   sensed current (mA) and applied voltage (duty × VM, VM = 5 V), vibro
@@ -146,9 +147,9 @@ curl -X POST localhost:7000/api/graphs/clear                                    
 ## Tuning
 
 - `distance-watch/sketch/sketch.ino`: `SPEED_PERCENT` (1–5 speed table,
-  {30,45,60,80,100} %), `VIBRO_PULSE_MS` / `VIBRO_PERIOD_MS` (haptic
-  rhythm), `COMMAND_TIMEOUT_MS` (failsafe, 2 s).
+  {30,45,60,80,100} %), `COMMAND_TIMEOUT_MS` (failsafe, 2 s).
 - `distance-watch/python/main.py`: `PRESENCE_MAX_MM` (threshold, also
-  settable live from the phone or `/api/threshold`), `MOTOR_VM_V` (5 V —
-  scales the dashboard voltage graph), `DASHBOARD_SPEED` (buttons, 5 =
-  full).
+  settable live from the phone or `/api/threshold`),
+  `VIBRO_PERIOD_FAR_MS` / `VIBRO_PERIOD_NEAR_MS` / `VIBRO_STOP_TIER_MM`
+  (haptic rhythm grading), `MOTOR_VM_V` (5 V — scales the dashboard
+  voltage graph), `DASHBOARD_SPEED` (buttons, 5 = full).
