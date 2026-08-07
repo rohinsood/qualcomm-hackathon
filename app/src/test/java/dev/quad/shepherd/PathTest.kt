@@ -193,6 +193,39 @@ class PathTest {
     }
 
     @Test
+    fun `deviates only while the path is blocked, then returns to it`() {
+        val grid = freshGrid()
+        val planner = PolarPlanner()
+        // Clear path: pass-through follows the goal exactly
+        repeat(4) { planner.plan(grid, 0f) }
+        var p = planner.plan(grid, 0f)
+        assertFalse(p.avoiding)
+        assertTrue("steer ${p.guidance.steer}", abs(p.guidance.steer) < 0.05f)
+        // A wall drops across the path -> detour engages
+        wall(grid, 1.4f, -1.0f, 1.0f)
+        repeat(6) { p = planner.plan(grid, 0f) }
+        assertTrue(p.avoiding)
+        assertTrue("steer ${p.guidance.steer}", abs(p.guidance.steer) > 0.1f)
+        // Path clear again -> back to following it
+        val open = freshGrid()
+        repeat(8) { p = planner.plan(open, 0f) }
+        assertFalse(p.avoiding)
+        assertTrue("steer ${p.guidance.steer}", abs(p.guidance.steer) < 0.1f)
+    }
+
+    @Test
+    fun `an off-path obstacle does not pull the user off the route`() {
+        val grid = freshGrid()
+        // Wall well to the LEFT of the goal direction; the path itself is open
+        wall(grid, 1.2f, -2.5f, -1.2f)
+        val planner = PolarPlanner()
+        var p = planner.plan(grid, 0f)
+        repeat(6) { p = planner.plan(grid, 0f) }
+        assertFalse(p.avoiding)
+        assertTrue("steer ${p.guidance.steer}", abs(p.guidance.steer) < 0.05f)
+    }
+
+    @Test
     fun `seg columns override a projection-artifact stop with cautious steer`() {
         val grid = freshGrid()
         enclosure(grid, 1.4f) // geometry says: nowhere to go

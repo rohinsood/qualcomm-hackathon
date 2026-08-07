@@ -153,6 +153,7 @@ class ShepherdService : LifecycleService() {
     @Volatile private var thermalNote = ""
     private var lastSeverity = GuidanceEngine.Severity.CLEAR
     private var lastPlanStop = false
+    private var lastPlanAvoiding = false
 
     /** Camera pitch for the BEV grid, from the gravity sensor. */
     private val gravityListener = object : SensorEventListener {
@@ -391,6 +392,14 @@ class ShepherdService : LifecycleService() {
             if (p.stop != lastPlanStop) {
                 lastPlanStop = p.stop
                 if (p.stop) DebugLog.d("PLAN", "no corridor — STOP")
+            }
+            if (p.avoiding != lastPlanAvoiding) {
+                lastPlanAvoiding = p.avoiding
+                DebugLog.d(
+                    "PLAN",
+                    if (p.avoiding) "obstacle on the path — deviating"
+                    else "path clear — back on route",
+                )
             }
         }
         blackboard.updateFrame(detections, result.frameWidth)

@@ -8,16 +8,17 @@ import kotlin.math.round
 import kotlin.math.sin
 
 /**
- * VFH+-style local planner over the [TraversabilityGrid]: raycast free
- * distance per polar sector, mark sectors blocked with HYSTERESIS
- * (separate enter/exit thresholds), find candidate valleys, and choose a
- * heading by cost = goal deviation + previous-direction deviation - valley
- * width. The previous-direction term plus hysteresis is what makes the
- * output COMMITTED: near-identical frames cannot flip the decision, which
- * was the failure mode of the per-frame column approach.
+ * Path-first local planner over the [TraversabilityGrid] (qhackgps
+ * semantics): in DEFAULT mode the output IS the route/beeline goal angle —
+ * the path owns the heading. Vision takes over only while a narrow cone
+ * around that goal is obstructed: then a VFH+-style detour picks the best
+ * valley (cost = goal deviation + previous-direction deviation - valley
+ * width, with blocked-sector HYSTERESIS), and the moment the path is clear
+ * again the heading re-centers onto it. The previous-direction term makes
+ * detours COMMITTED: near-identical frames cannot flip the decision.
  *
  * Emits a [GuidanceEngine.Guidance] so the entire downstream (SteerView,
- * haptics, CaneCommand, blackboard) is unchanged.
+ * CaneCommand, blackboard) is unchanged.
  *
  * Pure Kotlin for JVM unit testing.
  */
@@ -52,6 +53,12 @@ class PolarPlanner(
         const val STEER_FULL_DEG = 60f
         const val FORWARD_CONE_DEG = 16f
         const val RAY_START_M = 0.15f
+
+        /** Half-width of the "is the path clear" cone around the goal. */
+        const val GOAL_CONE_DEG = 10f
+
+        /** Re-centering speed onto the path when not avoiding. */
+        const val RETURN_ALPHA = 0.45f
     }
 
     data class Plan(
@@ -59,10 +66,16 @@ class PolarPlanner(
         val chosenAngleDeg: Float,
         val stop: Boolean,
         val sectorFreeM: FloatArray,
+        /** True while deviating around an obstacle; false = on the path. */
+        val avoiding: Boolean = false,
     )
 
     private val blocked = BooleanArray(sectors)
     private var committedAngle = 0f
+
+    /** Obstacle-deviation latch (qhackgps semantics): the path owns the
+     *  heading; vision only takes over while the path itself is blocked. */
+    private var avoiding = false
 
     /**
      * The camera yawed by [deltaDeg] since the last plan (compass): rotate
@@ -111,10 +124,45 @@ class PolarPlanner(
         }
         val nearest = nearestForward.takeIf { it < maxRangeM - 0.01f }
 
-        // 5) Valleys = contiguous unblocked runs wide enough to walk
+        val goal = goalAngleDeg ?: 0f
+
+        // 4b) Mode machine. Free distance in a narrow cone around the GOAL —
+        // the direction the route (outdoor) or beeline (indoor) wants. The
+        // planner deviates ONLY while this cone is obstructed, and the same
+        // hysteresis that blocks sectors also governs the return, so the
+        // heading cannot flip-flop at the boundary.
+        var goalFree = maxRangeM
+        for (s in 0 until sectors) {
+            if (abs(sectorAngle(s) - goal) <= GOAL_CONE_DEG) {
+                goalFree = min(goalFree, sm[s])
+            }
+        }
+        avoiding = if (avoiding) goalFree < BLOCK_EXIT_M else goalFree < BLOCK_ENTER_M
+
+        if (!avoiding) {
+            // DEFAULT MODE: follow the path. The planner is a pass-through;
+            // re-center onto the goal quickly after a deviation ends.
+            committedAngle += RETURN_ALPHA * (goal - committedAngle)
+            val severity = when {
+                nearestForward < DANGER_M -> GuidanceEngine.Severity.DANGER
+                nearestForward < CAUTION_M -> GuidanceEngine.Severity.CAUTION
+                else -> GuidanceEngine.Severity.CLEAR
+            }
+            val clear = severity == GuidanceEngine.Severity.CLEAR
+            val g = GuidanceEngine.Guidance(
+                severity = severity,
+                steer = (committedAngle / STEER_FULL_DEG).coerceIn(-1f, 1f),
+                nearestDistanceMeters = if (clear) null else nearest,
+                nearestLabel = if (clear) null else "obstacle",
+                columnThreat = threatColumns(sm),
+            )
+            return Plan(g, committedAngle, stop = false, sectorFreeM = sm, avoiding = false)
+        }
+
+        // 5) AVOID MODE — valleys = contiguous unblocked runs wide enough
+        // to walk; the goal bias steers the detour back toward the path
         var bestAngle: Float? = null
         var bestCost = Float.MAX_VALUE
-        val goal = goalAngleDeg ?: 0f
         var runStart = -1
         for (s in 0..sectors) {
             val open = s < sectors && !blocked[s]
@@ -171,7 +219,7 @@ class PolarPlanner(
                         nearestLabel = "obstacle",
                         columnThreat = threatColumns(sm),
                     )
-                    return Plan(g, committedAngle, stop = false, sectorFreeM = sm)
+                    return Plan(g, committedAngle, stop = false, sectorFreeM = sm, avoiding = true)
                 }
             }
             committedAngle = 0f
@@ -182,21 +230,16 @@ class PolarPlanner(
                 nearestLabel = "obstacle",
                 columnThreat = threatColumns(sm),
             )
-            return Plan(g, 0f, stop = true, sectorFreeM = sm)
+            return Plan(g, 0f, stop = true, sectorFreeM = sm, avoiding = true)
         }
 
-        // 7) Commit gradually toward the chosen heading
+        // 7) Commit gradually toward the chosen detour heading
         committedAngle += COMMIT_ALPHA * (bestAngle - committedAngle)
 
         val severity = when {
             nearestForward < DANGER_M -> GuidanceEngine.Severity.DANGER
             nearestForward < CAUTION_M -> GuidanceEngine.Severity.CAUTION
             else -> GuidanceEngine.Severity.CLEAR
-        }
-
-        // On a clear path with no route goal, relax back to straight
-        if (severity == GuidanceEngine.Severity.CLEAR && goalAngleDeg == null) {
-            committedAngle *= 0.85f
         }
 
         val g = GuidanceEngine.Guidance(
@@ -206,12 +249,13 @@ class PolarPlanner(
             nearestLabel = if (severity == GuidanceEngine.Severity.CLEAR) null else "obstacle",
             columnThreat = threatColumns(sm),
         )
-        return Plan(g, committedAngle, stop = false, sectorFreeM = sm)
+        return Plan(g, committedAngle, stop = false, sectorFreeM = sm, avoiding = true)
     }
 
     fun reset() {
         blocked.fill(false)
         committedAngle = 0f
+        avoiding = false
     }
 
     /** Sector index -> compass-relative angle; negative = LEFT. */
