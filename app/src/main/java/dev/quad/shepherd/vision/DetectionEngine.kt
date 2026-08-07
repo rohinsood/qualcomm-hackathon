@@ -37,6 +37,10 @@ class DetectionEngine {
 
     /** Loads the model and creates the ORT session. Call off the main thread. */
     fun initialize(context: Context): Boolean {
+        if (!dev.quad.shepherd.Loadout.OBJECT_DETECTION) {
+            Log.i(TAG, "disabled by Loadout.OBJECT_DETECTION")
+            return false
+        }
         val modelBytes = loadModelBytes(context) ?: run {
             Log.e(TAG, "No model found. Run scripts/fetch_model.ps1 or adb-push $MODEL_FILE.")
             return false

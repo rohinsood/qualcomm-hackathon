@@ -103,6 +103,12 @@ dependencies {
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
+    // ARCore: 6-DoF motion tracking + the Depth API. The areamap needs a
+    // pose to stamp obstacles against, and ARCore's depth is metric by
+    // construction — between them they replace the monocular depth model
+    // and the ground-plane self-calibration. See Loadout.
+    implementation("com.google.ar:core:1.54.0")
+
     // GPS fixes for walking navigation (route following runs locally;
     // only route/geocode requests leave the phone).
     implementation("com.google.android.gms:play-services-location:21.3.0")

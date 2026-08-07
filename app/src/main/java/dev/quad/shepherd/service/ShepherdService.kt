@@ -23,6 +23,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import dev.quad.shepherd.Loadout
 import dev.quad.shepherd.MainActivity
 import dev.quad.shepherd.R
 import dev.quad.shepherd.actuator.CaneActuator
@@ -76,9 +77,10 @@ class ShepherdService : LifecycleService() {
         /**
          * The companion SLM is parked: the NPU/memory/thermal budget goes
          * to perception instead. Voice NAV intents and OCR reading never
-         * touched the SLM and keep working. Flip to true to bring it back.
+         * touched the SLM and keep working. Flip [Loadout.COMPANION_SLM]
+         * to bring it back.
          */
-        private const val COMPANION_ENABLED = false
+        private const val COMPANION_ENABLED = Loadout.COMPANION_SLM
 
         /** Spoken navigation commands, handled before the SLM sees them.
          *  Unanchored: "hey, can you take me to…" must match too. */
@@ -283,23 +285,26 @@ class ShepherdService : LifecycleService() {
 
     private fun startPipeline() {
         lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                val detectionOk = engine.initialize(this@ShepherdService)
-                if (detectionOk) {
-                    depthEngine.initialize(this@ShepherdService)
-                    depthEngineOutdoor.initialize(this@ShepherdService)
-                    segEngine.initialize(this@ShepherdService)
-                    segEngineAde.initialize(this@ShepherdService)
-                }
-                detectionOk
+            // Each engine gates itself on its own Loadout flag and guards a
+            // null session, so these initialize INDEPENDENTLY. Detection
+            // used to be the gate for all of them and for the pipeline
+            // itself — with OBJECT_DETECTION off that aborted the camera,
+            // navigation and the cane link along with it.
+            var detectionOk = false
+            withContext(Dispatchers.IO) {
+                detectionOk = engine.initialize(this@ShepherdService)
+                depthEngine.initialize(this@ShepherdService)
+                depthEngineOutdoor.initialize(this@ShepherdService)
+                segEngine.initialize(this@ShepherdService)
+                segEngineAde.initialize(this@ShepherdService)
             }
-            if (!ok) {
-                visionLabel = "no model"
+            // Only complain about a model we actually asked for: a
+            // deliberately disabled engine is a choice, not a failure.
+            if (Loadout.OBJECT_DETECTION && !detectionOk) {
                 speech.announce(getString(R.string.model_missing), interrupt = true)
-                return@launch
             }
             visionLabel = buildString {
-                append(engine.activeProvider)
+                append(if (detectionOk) engine.activeProvider else "vision off")
                 if (depthEngine.available) {
                     append(" +depth-in(").append(depthEngine.activeProvider).append(")")
                 }

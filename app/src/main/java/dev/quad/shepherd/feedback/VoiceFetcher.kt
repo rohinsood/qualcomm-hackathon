@@ -32,6 +32,7 @@ object VoiceFetcher {
 
     /** No-op when a voice already exists on disk or a fetch is in flight. */
     fun ensureAsync(context: Context, scope: CoroutineScope, onReady: () -> Unit) {
+        if (!dev.quad.shepherd.Loadout.NEURAL_TTS) return // no 130 MB download
         val base = context.getExternalFilesDir(null) ?: return
         val supertonic = File(base, "models/supertonic")
         if (File(supertonic, "vocoder.int8.onnx").isFile) return

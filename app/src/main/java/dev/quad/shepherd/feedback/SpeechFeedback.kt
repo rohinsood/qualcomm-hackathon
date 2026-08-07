@@ -67,6 +67,7 @@ class SpeechFeedback(context: Context) {
 
     /** (Re)try loading the Kokoro voice, e.g. after KokoroFetcher finishes. */
     fun reloadNeural(context: Context) {
+        if (!dev.quad.shepherd.Loadout.NEURAL_TTS) return // system engine speaks
         if (neural != null) return
         Thread({
             neural = NeuralTts.tryCreate(context.getExternalFilesDir(null))

@@ -136,6 +136,10 @@ class DepthEngine(
 
     /** Loads the model if present. Call off the main thread. */
     fun initialize(context: Context): Boolean {
+        if (!dev.quad.shepherd.Loadout.MONO_DEPTH) {
+            Log.i(TAG, "$modelFile disabled by Loadout.MONO_DEPTH")
+            return false
+        }
         val bytes = loadModelBytes(context) ?: run {
             Log.i(TAG, "$modelFile not found, running without it")
             return false

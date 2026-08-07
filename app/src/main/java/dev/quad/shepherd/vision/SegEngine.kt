@@ -96,6 +96,10 @@ class SegEngine(private val spec: Spec) {
     private val classOut = ByteArray(spec.outW * spec.outH)
 
     fun initialize(context: Context): Boolean {
+        if (!dev.quad.shepherd.Loadout.SEGMENTATION) {
+            Log.i(TAG, "${spec.name} disabled by Loadout.SEGMENTATION")
+            return false
+        }
         val f = File(context.getExternalFilesDir(null), spec.modelFile)
         if (!f.isFile) {
             Log.i(TAG, "no ${spec.modelFile} — ${spec.name} off")

@@ -24,7 +24,7 @@ class OcrReader {
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
     /** Returns recognized text (newlines flattened), or null when none/failed. */
-    suspend fun read(bitmap: Bitmap): String? = try {
+    suspend fun read(bitmap: Bitmap): String? = if (!dev.quad.shepherd.Loadout.OCR) null else try {
         val result = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
         result.text
             .replace('\n', ' ')

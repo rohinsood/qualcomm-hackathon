@@ -30,6 +30,12 @@
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="false" />
+    <!-- ARCore supplies the areamap's pose and depth. Declared OPTIONAL,
+         not required: the app must still install and navigate by compass
+         on a device without it, and PdrPose covers tracking loss. -->
+    <uses-feature
+        android:name="android.hardware.camera.ar"
+        android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -53,6 +59,12 @@
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
+
+        <!-- "optional" keeps the APK installable everywhere and lets the
+             app decide at runtime whether ARCore is usable. -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="optional" />
 
         <service
             android:name=".service.ShepherdService"
