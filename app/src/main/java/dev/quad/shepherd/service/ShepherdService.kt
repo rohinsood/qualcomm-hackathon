@@ -409,6 +409,20 @@ class ShepherdService : LifecycleService() {
         lifecycleScope.launch {
             caneLink.state.collect { DebugLog.d("CANE", it.toString()) }
         }
+        lifecycleScope.launch {
+            caneLink.terrain.collect { terrain ->
+                if (terrain == null) return@collect
+                val newMode = when (terrain) {
+                    "indoor_floor" -> dev.quad.shepherd.nav.CompassNav.Mode.INDOOR
+                    "sidewalk", "road", "grass" -> dev.quad.shepherd.nav.CompassNav.Mode.OUTDOOR
+                    else -> null
+                }
+                if (newMode != null && newMode != compassNav.mode) {
+                    compassNav.setMode(newMode)
+                    DebugLog.d("CANE", "terrain -> ${terrain}, nav mode -> $newMode")
+                }
+            }
+        }
     }
 
     /** One motor letter per 200 ms period, aggregated + failsafe-friendly. */

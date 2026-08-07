@@ -71,6 +71,9 @@ class CaneBleLink(private val context: Context) {
     private val _reading = MutableStateFlow<CaneReading?>(null)
     val reading: StateFlow<CaneReading?> = _reading.asStateFlow()
 
+    private val _terrain = MutableStateFlow<String?>(null)
+    val terrain: StateFlow<String?> = _terrain.asStateFlow()
+
     private var desired = false
     private var scanning = false
     private var gatt: BluetoothGatt? = null
@@ -389,6 +392,11 @@ class CaneBleLink(private val context: Context) {
                 json.has("mm") || json.has("p") -> {
                     val mm = if (!json.has("mm") || json.isNull("mm")) null else json.getInt("mm")
                     _reading.value = CaneReading(mm = mm, present = json.optInt("p", 0) == 1)
+                }
+                json.has("terrain") -> {
+                    val t = json.getString("terrain").lowercase()
+                    _terrain.value = t
+                    Log.d(TAG, "cane terrain: $t")
                 }
                 json.has("thr") -> Log.d(TAG, "cane threshold ack: $line")
                 json.has("err") -> Log.w(TAG, "cane error: $line")

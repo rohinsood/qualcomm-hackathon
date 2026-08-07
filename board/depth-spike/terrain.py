@@ -358,24 +358,25 @@ class CanePoster:
             return False
 
     def announce_terrain(self, terrain: str):
-        """Rate-limited terrain text announcement on debounced class change."""
+        """Rate-limited terrain text announcement on debounced class change.
+        Also pushes a JSON terrain label to the cane state (relayed to phone
+        over BLE state characteristic for automatic indoor/outdoor mode switch)."""
         now = time.monotonic()
         if terrain == self._last_terrain:
             return
         if now - self._last_post_t < POST_INTERVAL_S:
             return
         text_map = {
-            "sidewalk": "SIDEWALK",
-            "road": "ROAD",
-            "grass": "GRASS",
+            "sidewalk": "OUTDOOR MODE",
+            "road": "OUTDOOR MODE",
+            "grass": "OUTDOOR MODE",
             "stairs": "STAIRS AHEAD",
-            "indoor_floor": "INDOOR",
+            "indoor_floor": "INDOOR MODE",
             "unknown": "CLEAR",
         }
         text = text_map.get(terrain, "CLEAR")
         if self.transport == "motor":
-            dir_ = 0 if terrain == "stairs" else 0  # terrain doesn't steer
-            self._post("/api/motor", {"dir": dir_})
+            self._post("/api/motor", {"dir": 0})
         else:
             self._post("/api/phone", {"text": text})
         self._last_terrain = terrain
