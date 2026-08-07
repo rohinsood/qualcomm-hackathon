@@ -198,8 +198,8 @@ function render(d) {
   motCmd.textContent = motorWord(d.motor);
   motApplied.textContent = motorWord(d.motor_applied);
   motSpeed.textContent = d.motor === 0 && d.motor_applied === 0
-    ? `${d.wheel_speed ?? '—'} (stopped)`
-    : `${d.wheel_speed ?? '—'} cmd / ${d.speed_applied ?? '—'} applied`;
+    ? 'stopped'
+    : 'full scale (100% duty)';
   motMaA.textContent = fmtMa(d.motor_ma_a);
   motMaB.textContent = fmtMa(d.motor_ma_b);
   motDuty.textContent = fmtDutyRow(d.motor_duty_pct);
@@ -276,6 +276,44 @@ btnStop.addEventListener('click', () => post('/api/motor', { dir: 0 }));
 btnRight.addEventListener('click', () => post('/api/motor', { dir: 1 }));
 btnBuzz.addEventListener('click', () => post('/api/vibro', { ms: 600 }));
 $('btn-clear-graphs').addEventListener('click', () => post('/api/graphs/clear', {}));
+
+// Arrow-key driving: hold ← / → to spin (release stops), ↓ or Space stops,
+// ↑ fires the buzz. Same /api/motor calls as the buttons, so the lit button
+// states and the board can never disagree. keyDir tracks what the keys are
+// commanding, so a keyup that never arrives (tab switch, focus loss) still
+// stops the wheel instead of leaving it spinning.
+let keyDir = 0;
+
+function keyDrive(dir) {
+  if (dir === keyDir) return;
+  keyDir = dir;
+  post('/api/motor', { dir });
+}
+
+window.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  switch (e.key) {
+    case 'ArrowLeft':  e.preventDefault(); if (!e.repeat) keyDrive(-1); break;
+    case 'ArrowRight': e.preventDefault(); if (!e.repeat) keyDrive(1); break;
+    case 'ArrowDown':
+    case ' ':          e.preventDefault(); if (!e.repeat) keyDrive(0); break;
+    case 'ArrowUp':    e.preventDefault(); if (!e.repeat) post('/api/vibro', { ms: 600 }); break;
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  if ((e.key === 'ArrowLeft' && keyDir === -1)
+      || (e.key === 'ArrowRight' && keyDir === 1)) {
+    keyDrive(0);
+  }
+});
+
+// Focus lost mid-hold means the keyup will never fire — stop the wheel.
+window.addEventListener('blur', () => keyDrive(0));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) keyDrive(0);
+});
 
 ui.on_connect(() => {
   conn.textContent = 'Live';

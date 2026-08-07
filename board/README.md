@@ -16,7 +16,8 @@ talking over the Nordic UART bridge.
   readings (mm/cm, rate, age), motor telemetry with **live graphs** of
   sensed current (mA) and applied voltage (duty × VM, VM = 5 V), vibro
   state, Bluetooth links, rolling event log — plus manual spin/stop/buzz
-  and clear-graphs buttons.
+  and clear-graphs buttons. Laptop arrow keys drive too: hold ← / → to
+  spin (release stops), ↓/Space stops, ↑ buzzes.
 - **Failsafe**: the Linux side re-sends the desired state 4×/s; if that
   stream stops for 2 s, the sketch stops the wheel and vibro on its own.
 
@@ -146,10 +147,11 @@ curl -X POST localhost:7000/api/graphs/clear                                    
 
 ## Tuning
 
-- `distance-watch/sketch/sketch.ino`: `SPEED_PERCENT` (1–5 speed table,
-  {30,45,60,80,100} %), `COMMAND_TIMEOUT_MS` (failsafe, 2 s).
+- `distance-watch/sketch/sketch.ino`: `COMMAND_TIMEOUT_MS` (failsafe, 2 s).
+  There is no speed knob — every spin is pinned to 100% duty in the
+  firmware itself (speed arguments on the wire are ignored).
 - `distance-watch/python/main.py`: `PRESENCE_MAX_MM` (threshold, also
   settable live from the phone or `/api/threshold`),
   `VIBRO_PERIOD_FAR_MS` / `VIBRO_PERIOD_NEAR_MS` / `VIBRO_STOP_TIER_MM`
   (haptic rhythm grading), `MOTOR_VM_V` (5 V — scales the dashboard
-  voltage graph), `DASHBOARD_SPEED` (buttons, 5 = full).
+  voltage graph).

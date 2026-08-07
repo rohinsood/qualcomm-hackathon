@@ -36,8 +36,11 @@
         <button id="btn-buzz" class="btn">Buzz vibro (600 ms)</button>
       </div>
       <p class="hint">Buttons command the board the same way the phone does; the
-        active spin direction stays lit. The sketch stops everything on its own
-        if the link goes quiet for 2&nbsp;s.</p>
+        active spin direction stays lit. Keyboard: hold <kbd>&larr;</kbd> /
+        <kbd>&rarr;</kbd> to spin left / right &mdash; release to stop;
+        <kbd>&darr;</kbd> or <kbd>Space</kbd> = stop, <kbd>&uarr;</kbd> = buzz.
+        The sketch stops everything on its own if the link goes quiet for
+        2&nbsp;s.</p>
     </section>
 
     <section class="card">
@@ -66,7 +69,7 @@
           <tr><th scope="row">module</th><td id="mot-status">&mdash;</td></tr>
           <tr><th scope="row">commanded</th><td id="mot-cmd">stop</td></tr>
           <tr><th scope="row">applied by sketch</th><td id="mot-applied">stop</td></tr>
-          <tr><th scope="row">wheel speed (1&ndash;5)</th><td id="mot-speed">&mdash;</td></tr>
+          <tr><th scope="row">wheel speed</th><td id="mot-speed">&mdash;</td></tr>
           <tr><th scope="row">current &middot; channel A (1A/2A)</th><td id="mot-ma-a">&mdash;</td></tr>
           <tr><th scope="row">current &middot; channel B</th><td id="mot-ma-b">&mdash;</td></tr>
           <tr><th scope="row">applied voltage (duty)</th><td id="mot-duty">&mdash;</td></tr>
@@ -102,9 +105,9 @@
         channel, driven in opposite phase), so both channels show current while it spins.
         The firmware reports current sense only &mdash; VM is not readable over I&sup2;C, so
         applied voltage is computed as PWM duty &times; VM with VM = 5&nbsp;V (set in
-        <code>main.py</code> <code>MOTOR_VM_V</code>). Dashboard spin = full scale =
-        &plusmn;5&nbsp;V; the phone can pick speeds 1&ndash;5. Yellow VM LED = motor power
-        present.</p>
+        <code>main.py</code> <code>MOTOR_VM_V</code>). Every spin &mdash; buttons, arrow
+        keys, phone, auto-avoid &mdash; is full scale = &plusmn;5&nbsp;V; there are no
+        graded speeds. Yellow VM LED = motor power present.</p>
     </section>
 
     <section class="card">

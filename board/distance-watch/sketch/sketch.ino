@@ -4,9 +4,10 @@
  * One sketch for the whole Modulino chain on the Qwiic bus (Wire1):
  *   UNO Q -> Modulino Motors -> Modulino Vibro -> Modulino Distance
  *
- * - Wheel: dir/speed arrive from the Linux side via "set_wheel" (phone over
- *   the QCane GATT, or the dashboard buttons). The 13x8 LED matrix mirrors
- *   what the motor is doing.
+ * - Wheel: direction arrives from the Linux side via "set_wheel" (phone over
+ *   BLE, or the dashboard buttons). Every spin is full scale (100% duty) —
+ *   there are no graded speeds anywhere in this firmware. The 13x8 LED
+ *   matrix mirrors what the motor is doing.
  * - Distance: every valid ToF measurement streams up as "distance_reading".
  * - Vibro: pulses in a rhythm while the Linux side holds "set_vibro" on
  *   (object inside the presence threshold); "vibro_pulse" fires one manual
@@ -18,11 +19,10 @@
  * Wiring: the motor sits across terminals 1A and 2A, which is one half-bridge
  * from channel A and one from channel B rather than a single channel's own
  * pair, so the two channels have to be driven in opposite phase — see
- * stepMotor(). Commands ramp through a leaky integrator (tau = 0.45 s,
- * Shepherd-style) instead of stepping; the failsafe stops hard, skipping the
- * ramp. "motor_selftest" re-measures every drive option if that ever needs
- * checking again (streams "selftest_telemetry"; the periodic dashboard
- * stream is "motor_telemetry").
+ * applyMotor(). Commands step straight to full scale, no ramp ("turn hard
+ * 100% no matter what"). "motor_selftest" re-measures every drive option if
+ * that ever needs checking again (streams "selftest_telemetry"; the periodic
+ * dashboard stream is "motor_telemetry").
  */
 
 #include <Arduino_LED_Matrix.h>
@@ -34,9 +34,9 @@ ModulinoDistance distance;  // VL53L4CD/VL53L4ED time-of-flight sensor
 ModulinoMotors motors;      // MAX22211 dual H-bridge; motor across 1A <-> 2A
 ModulinoVibro vibro;        // haptic vibration motor
 
-// Wheel speed 1..5 as a percentage of full scale. Starts high enough that a
-// loaded motor actually turns instead of just buzzing.
-static const uint8_t SPEED_PERCENT[5] = {30, 45, 60, 80, 100};
+// The wheel has exactly one speed: full scale (100% duty). The set_wheel RPC
+// keeps its (dir, speed) arity for wire compatibility, but the speed argument
+// is ignored — no command can produce a partial-duty spin.
 
 // The Linux side re-sends the desired actuator state 4x/s; if that stream
 // stops (app or bridge died), stop every output rather than run away.
@@ -56,12 +56,8 @@ constexpr unsigned long MODULE_RETRY_MS = 3000;
 constexpr unsigned long TELEMETRY_MS = 500;
 constexpr unsigned long DISTANCE_POLL_MS = 20;
 
-// Leaky-integrator drive (Shepherd's ESP32 pattern): the wheel ramps toward
-// the commanded target instead of stepping to it. dS/dt = target - S/tau,
-// output = S/tau — so a reversal glides through zero and reaching full scale
-// from rest takes ~3*tau (~1.4 s). The failsafe bypasses the ramp (hard stop).
-constexpr unsigned long MOTOR_UPDATE_MS = 25;
-constexpr float MOTOR_TAU_S = 0.45f;
+// LED-matrix animation step at full speed.
+constexpr uint16_t MATRIX_STEP_MS = 45;
 
 static const uint8_t MATRIX_W = 13;
 static const uint8_t MATRIX_H = 8;
@@ -88,9 +84,8 @@ static bool vibroReady = false;
 
 // Bridge handlers run on the bridge thread, loop() reads them — keep volatile.
 volatile int wheelDir = 0;    // -1 = left, 0 = stopped, +1 = right
-volatile int wheelSpeed = 5;  // 1 (slowest) .. 5 (full scale)
 volatile bool dirty = true;
-volatile int selftestPercent = 0;   // > 0 asks loop() to run the self-test
+volatile bool selftestPending = false;  // asks loop() to run the self-test
 volatile bool desiredVibro = false;
 volatile int vibroPeriodMs = VIBRO_DEFAULT_PERIOD_MS;  // commanded rhythm; <= 0 = continuous
 volatile int pendingPulseMs = 0;    // one-shot manual buzz from the dashboard
@@ -103,14 +98,10 @@ static unsigned long lastStep = 0;
 // Last command loop() acted on, so transitions are handled exactly once.
 // Seeded to an impossible value so the current state is reported once at boot.
 static int appliedDir = -99;
-static int appliedSpeed = -99;
 
-// Leaky-integrator drive state.
-static float motorState = 0.0f;       // integrator state (raw-speed * seconds)
-static int16_t lastWrittenRaw = 0;    // last raw value written to the module
-static bool motorSettled = true;      // final stop write already done
-static bool failsafeLatched = false;  // hard stop on timeout issued once
-static unsigned long lastMotorStepMs = 0;
+static int16_t lastWrittenRaw = 0;      // last raw value written to the module
+static bool motorWritePending = false;  // I2C write failed; retry next pass
+static bool failsafeLatched = false;    // hard stop on timeout issued once
 
 static bool vibroActive = false;
 static unsigned long lastPulseMs = 0;
@@ -123,17 +114,6 @@ static float lastMm = NAN;
 static inline void px(uint8_t row, uint8_t col, uint8_t level) {
   if (row < MATRIX_H && col < MATRIX_W) {
     frame[row * MATRIX_W + col] = level;
-  }
-}
-
-// Animation step delay: higher speed spins faster.
-static uint16_t stepIntervalMs(int speed) {
-  switch (speed) {
-    case 1:  return 220;
-    case 2:  return 150;
-    case 3:  return 100;
-    case 4:  return 70;
-    default: return 45;
   }
 }
 
@@ -173,76 +153,29 @@ static void renderWheel() {
   }
 }
 
-// Convert a wheel speed of 1..5 into a raw signed H-bridge value.
-static int16_t rawForSpeed(int speed) {
-  uint8_t percent = SPEED_PERCENT[constrain(speed, 1, 5) - 1];
-  return (int16_t)((int32_t)percent * ModulinoMotors::MAX_SPEED / 100);
-}
-
-// Signed duty percentage the H-bridge is applying RIGHT NOW — the live
-// integrator output, not the command target, so the dashboard voltage graph
-// shows the actual ramps.
+// Signed duty percentage the H-bridge is applying RIGHT NOW (-100/0/+100).
 static int appliedDutyPct() {
   return (int)lroundf(100.0f * (float)lastWrittenRaw
                       / (float)ModulinoMotors::MAX_SPEED);
 }
 
-// Commanded target for the integrator, as a signed raw H-bridge value.
-static float targetRaw() {
-  if (appliedDir == 0 || appliedDir == -99 || appliedSpeed < 1) {
-    return 0.0f;
+// Drive the H-bridge: full scale in the given direction, or stop. The motor
+// bridges terminal 1A (channel A) and 2A (channel B), so the channels are
+// driven in opposite phase: setDcSpeedRaw(+raw, -raw). Returns false when
+// the I2C write did not go through, so loop() can retry.
+static bool applyMotor(int dir) {
+  if (dir == 0 || dir == -99) {
+    motors.stop();
+    lastWrittenRaw = 0;
+    return true;
   }
-  return (float)appliedDir * (float)rawForSpeed(appliedSpeed);
-}
-
-// One integrator step. The motor bridges terminal 1A (channel A) and 2A
-// (channel B), so the channels are driven in opposite phase:
-// setDcSpeedRaw(+out, -out). Writes go to the module only when the output
-// moved ~1% of full scale (or for the final snap to zero), keeping the I2C
-// traffic modest at 40 Hz.
-static void stepMotor(unsigned long now) {
-  if (now - lastMotorStepMs < MOTOR_UPDATE_MS) {
-    return;
+  int16_t raw = (dir > 0) ? (int16_t)ModulinoMotors::MAX_SPEED
+                          : (int16_t)-ModulinoMotors::MAX_SPEED;
+  if (!motors.setDcSpeedRaw(raw, (int16_t)-raw)) {
+    return false;
   }
-  float dt = (float)(now - lastMotorStepMs) / 1000.0f;
-  if (dt > 0.1f) {
-    dt = 0.1f;  // clamp after blocking stretches (self-test) so state can't jump
-  }
-  lastMotorStepMs = now;
-
-  float target = targetRaw();
-  motorState += dt * (target - motorState / MOTOR_TAU_S);
-
-  float outF = motorState / MOTOR_TAU_S;
-  const float lim = (float)ModulinoMotors::MAX_SPEED;
-  if (outF > lim) {
-    outF = lim;
-  }
-  if (outF < -lim) {
-    outF = -lim;
-  }
-  int16_t out = (int16_t)outF;
-
-  const int deadband = ModulinoMotors::MAX_SPEED / 100;  // ~1% of full scale
-  if (target == 0.0f && out > -deadband && out < deadband) {
-    if (!motorSettled) {
-      motors.stop();
-      motorState = 0.0f;
-      lastWrittenRaw = 0;
-      motorSettled = true;
-    }
-    return;
-  }
-  int delta = (int)out - (int)lastWrittenRaw;
-  if (delta < 0) {
-    delta = -delta;
-  }
-  if (delta >= deadband || motorSettled) {
-    if (motors.setDcSpeedRaw(out, (int16_t)-out)) {
-      lastWrittenRaw = out;
-      motorSettled = false;
-    }
-  }
+  lastWrittenRaw = raw;
+  return true;
 }
 
 // Sample the current sensors and hand the numbers to the Linux side. Used by
@@ -268,15 +201,15 @@ static void reportCurrent(const char* stage) {
 
 // Try every sensible way of driving the two channels and report the current
 // each one draws. Runs from loop(), so it is free to block.
-static void runSelftest(int percent) {
+static void runSelftest() {
   if (!motorReady) {
     Bridge.notify("selftest_telemetry", String("no modulino found"),
                   -1.0f, -1.0f, String("?"), false);
     return;
   }
 
-  int16_t raw = (int16_t)((int32_t)constrain(percent, 10, 100)
-                          * ModulinoMotors::MAX_SPEED / 100);
+  // Full scale, like every other spin in this firmware.
+  int16_t raw = (int16_t)ModulinoMotors::MAX_SPEED;
 
   // Half-full-scale doubles the current-sense resolution (~0.65 mA per count
   // instead of ~1.3), which matters when we are looking for "any current".
@@ -297,11 +230,9 @@ static void runSelftest(int percent) {
 
   motors.setHalfFullScaleEnabled(false);
 
-  // Ramp back to the current target from rest rather than jumping.
-  motorState = 0.0f;
+  // Re-apply the current wheel command on the next loop() pass.
   lastWrittenRaw = 0;
-  motorSettled = false;
-  lastMotorStepMs = millis();
+  appliedDir = -99;
 }
 
 static bool beginMotors() {
@@ -311,31 +242,29 @@ static bool beginMotors() {
   motors.setStepperModeEnabled(false);  // DC, not stepper
   motors.setDecay(ModulinoMotors::DecayMode::SLOW);
   motors.stop();
-  // Force the next loop() pass to re-apply and re-report the wheel state,
-  // and restart the ramp from rest.
+  // Force the next loop() pass to re-apply and re-report the wheel state.
   appliedDir = -99;
-  appliedSpeed = -99;
-  motorState = 0.0f;
   lastWrittenRaw = 0;
-  motorSettled = true;
+  motorWritePending = false;
   return true;
 }
 
-// Called from Python: Bridge.call("set_wheel", dir, speed).
+// Called from Python: Bridge.call("set_wheel", dir, speed). The speed
+// argument is accepted for wire compatibility and IGNORED — every spin runs
+// at full scale.
 //
 // This runs on the bridge thread, in the middle of an RPC request, so it only
 // touches state. Logging here would be a nested RPC (Monitor.write() calls
 // back over the same bridge) and driving hardware would stall the request —
 // both are handled from loop() instead.
 void set_wheel(int dir, int speed) {
+  (void)speed;
   int d = (dir > 0) ? 1 : ((dir < 0) ? -1 : 0);
-  int s = constrain(speed, 1, 5);
   // The Linux side re-sends this 4x/s as a heartbeat; only redraw on change.
-  if (d != wheelDir || s != wheelSpeed) {
+  if (d != wheelDir) {
     dirty = true;
   }
   wheelDir = d;
-  wheelSpeed = s;
   lastCommandMs = millis();
 }
 
@@ -349,10 +278,12 @@ void vibro_pulse(int ms) {
   pendingPulseMs = constrain(ms, 50, 3000);
 }
 
-// Called from Python: Bridge.call("motor_selftest", percent). Same rule as
-// set_wheel — only set a flag; loop() does the blocking work.
+// Called from Python: Bridge.call("motor_selftest", percent). The percent is
+// ignored — the self-test drives full scale like everything else. Same rule
+// as set_wheel: only set a flag; loop() does the blocking work.
 void motor_selftest(int percent) {
-  selftestPercent = constrain(percent, 10, 100);
+  (void)percent;
+  selftestPending = true;
 }
 
 void setup() {
@@ -389,10 +320,9 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  if (selftestPercent > 0) {
-    int percent = selftestPercent;
-    selftestPercent = 0;
-    runSelftest(percent);
+  if (selftestPending) {
+    selftestPending = false;
+    runSelftest();
     lastStep = millis();
   }
 
@@ -431,9 +361,7 @@ void loop() {
   }
 
   // Failsafe: without fresh commands from the Linux side, stop everything.
-  // The wheel stop here is HARD (no ramp-down) — safety first.
   int effDir = wheelDir;
-  int effSpeed = wheelSpeed;
   bool vibroTarget = desiredVibro;
   bool failsafe = (lastCommandMs == 0 || (now - lastCommandMs) > COMMAND_TIMEOUT_MS);
   if (failsafe) {
@@ -444,35 +372,36 @@ void loop() {
       if (motorReady) {
         motors.stop();
       }
-      motorState = 0.0f;
       lastWrittenRaw = 0;
-      motorSettled = true;
+      motorWritePending = false;
     }
   } else {
     failsafeLatched = false;
   }
 
-  // React to a new command: record the ramp target, tell Python what got
-  // applied, and log. All of it outside the bridge handler, where blocking and
-  // nested RPCs are safe. The integrator below does the actual driving.
-  if (effDir != appliedDir || effSpeed != appliedSpeed) {
+  // React to a new command: drive the H-bridge straight to full scale (or
+  // stop), tell Python what got applied, and log. All of it outside the
+  // bridge handler, where blocking and nested RPCs are safe.
+  if (effDir != appliedDir) {
     appliedDir = effDir;
-    appliedSpeed = effSpeed;
+    if (motorReady && !failsafe) {
+      motorWritePending = !applyMotor(effDir);
+    }
 
     // Fire-and-forget, so a Python side that is not listening cannot stall us.
-    // motorReady rides along so the app can flag a missing Modulino.
-    Bridge.notify("wheel_applied", effDir, effSpeed, motorReady);
+    // motorReady rides along so the app can flag a missing Modulino. The
+    // speed slot is pinned to 5 (full scale) for payload compatibility.
+    Bridge.notify("wheel_applied", effDir, 5, motorReady);
 
     Monitor.print("[wheel] dir=");
     Monitor.print(effDir);
-    Monitor.print(" speed=");
-    Monitor.println(effSpeed);
+    Monitor.println(" (full scale)");
     dirty = true;
   }
 
-  // Ramp the H-bridge toward the commanded target (leaky integrator).
-  if (motorReady && !failsafe) {
-    stepMotor(now);
+  // Retry a wheel write that failed (transient I2C hiccup).
+  if (motorWritePending && motorReady && !failsafe) {
+    motorWritePending = !applyMotor(appliedDir);
   }
 
   // Proximity haptics at the commanded rhythm: the period tightens as the
@@ -538,7 +467,7 @@ void loop() {
   }
 
   if (appliedDir != 0 && appliedDir != -99
-      && (now - lastStep) >= stepIntervalMs(appliedSpeed)) {
+      && (now - lastStep) >= MATRIX_STEP_MS) {
     lastStep = now;
     head = ((head + appliedDir) % RING_LEN + RING_LEN) % RING_LEN;
     dirty = true;
