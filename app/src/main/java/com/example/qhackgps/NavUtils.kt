@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.location.Location
+import android.util.Log
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
@@ -37,6 +38,17 @@ fun shortestSignedDelta(target: Float, current: Float): Float {
     var d = (target - current) % 360f
     if (d < -180f) d += 360f
     if (d >= 180f) d -= 360f
+    return d
+}
+
+/** Wraps any angle into a compass reading in [0, 360). Safe for large negatives. */
+fun wrap360(deg: Float): Float = ((deg % 360f) + 360f) % 360f
+
+/** Wraps any angle into a signed trim in (-180, 180], so "+350°" reads as "-10°". */
+fun wrap180(deg: Float): Float {
+    var d = deg % 360f
+    if (d <= -180f) d += 360f
+    if (d > 180f) d -= 360f
     return d
 }
 
@@ -80,7 +92,10 @@ fun mapsApiKey(context: Context): String = try {
  * can fall back to a straight line.
  */
 suspend fun fetchWalkingRoute(origin: LatLng, dest: LatLng, apiKey: String): List<LatLng>? {
-    if (apiKey.isBlank() || apiKey == "YOUR_API_KEY_HERE") return null
+    if (apiKey.isBlank() || apiKey == "YOUR_API_KEY_HERE") {
+        Log.w(ROUTE_TAG, "No Maps key — set MAPS_API_KEY in local.properties. Straight line only.")
+        return null
+    }
     return withContext(Dispatchers.IO) {
         try {
             val url = URL(
@@ -89,21 +104,46 @@ suspend fun fetchWalkingRoute(origin: LatLng, dest: LatLng, apiKey: String): Lis
                     "&destination=${dest.latitude},${dest.longitude}" +
                     "&mode=walking&key=$apiKey"
             )
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 8000
-            connection.readTimeout = 8000
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+            }
+            // On a non-2xx, inputStream throws and the body (which carries Google's
+            // reason) is on errorStream instead — read whichever applies.
+            val code = connection.responseCode
+            val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
             connection.disconnect()
+            if (code !in 200..299) {
+                Log.w(ROUTE_TAG, "Directions HTTP $code: ${body.take(300)}")
+                return@withContext null
+            }
             val json = JSONObject(body)
-            if (json.optString("status") != "OK") return@withContext null
-            val encoded = json.getJSONArray("routes").getJSONObject(0)
+            val status = json.optString("status")
+            if (status != "OK") {
+                // REQUEST_DENIED almost always means either the Directions API isn't
+                // enabled on the key, or the key is restricted to Android apps — this
+                // is a web-service call, so an Android restriction rejects it.
+                Log.w(ROUTE_TAG, "Directions status=$status ${json.optString("error_message")}")
+                return@withContext null
+            }
+            val routes = json.optJSONArray("routes")
+            if (routes == null || routes.length() == 0) {
+                Log.w(ROUTE_TAG, "Directions returned OK but no routes (unreachable on foot?)")
+                return@withContext null
+            }
+            val encoded = routes.getJSONObject(0)
                 .getJSONObject("overview_polyline").getString("points")
             decodePolyline(encoded).takeIf { it.size >= 2 }
-        } catch (_: Exception) {
+                ?: null.also { Log.w(ROUTE_TAG, "Directions polyline had < 2 points") }
+        } catch (e: Exception) {
+            Log.w(ROUTE_TAG, "Directions request failed", e)
             null
         }
     }
 }
+
+private const val ROUTE_TAG = "qhackGPS.route"
 
 /** Standard Google encoded-polyline decoder. */
 fun decodePolyline(encoded: String): List<LatLng> {
