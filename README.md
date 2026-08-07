@@ -22,10 +22,12 @@ no subscription, no signal required. Built, printed, assembled, and walked with.
 
 ## Team
 
-| Name | Email |
+| Name | Github |
 |---|---|
-| _TODO_ | _TODO_ |
-| _TODO_ | _TODO_ |
+| Rohin Sood | [_TODO_](https://github.com/rohinsood) |
+| Manuel Rodrigues | [_TODO_](https://github.com/MaRodriguezB777) |
+| Venkata Yaswanth Kanduri | [vkanduri](https://github.com/kvyaswanth) |
+| Noah Zhang | [_TODO_](https://github.com/iujab) |
 
 ---
 
