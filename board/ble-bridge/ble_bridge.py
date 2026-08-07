@@ -10,6 +10,8 @@ terminal app on a phone can talk to the board:
 Board -> phone (TX notify, ~2 Hz + instantly on presence change):
   {"mm":123,"p":1}        latest distance in mm; p=1 while an object is within
                           the presence threshold; mm=null when nothing in range
+  {"say":"..."}           one line for the phone to read aloud (TTS) — sent
+                          when someone presses a dashboard button on :7000
 
 Phone -> board (RX write, UTF-8 text):
   <number>   set the presence threshold in mm (e.g. "250"), ack {"thr":250}
@@ -273,6 +275,7 @@ class Bridge:
         self.connected_devices = {}  # object path -> alias
         self.last_pushed = None      # (mm, present) of the last notify
         self.last_push_t = 0.0
+        self.last_say_n = None       # sequence of the last forwarded say line
         self.app_down_logged = False
         self.phone_threshold = None   # last threshold the phone asked for, in mm
         self.threshold_dirty = False  # that value still needs pushing to the app
@@ -467,6 +470,19 @@ class Bridge:
             self.tx.send_line(f'{{"mm":{mm_json},"p":{present}}}')
             self.last_pushed = (mm_int, present)
             self.last_push_t = now
+
+        # Forward dashboard-button TTS lines. On the first poll just adopt the
+        # counter so a bridge restart does not replay an old announcement.
+        say = state.get("say") or {}
+        n = say.get("n") or 0
+        if self.last_say_n is None:
+            self.last_say_n = n
+        elif n != self.last_say_n:
+            self.last_say_n = n
+            text = say.get("text")
+            if text:
+                self.tx.send_line(json.dumps(
+                    {"say": str(text)[:80]}, separators=(",", ":")))
 
     # -- phone -> board
 

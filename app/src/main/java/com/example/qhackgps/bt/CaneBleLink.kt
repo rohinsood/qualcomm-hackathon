@@ -46,6 +46,13 @@ sealed interface CaneLinkState {
 data class CaneReading(val mm: Int?, val present: Boolean)
 
 /**
+ * One line the board asks the phone to read aloud (a {"say": ...} notify,
+ * e.g. when someone presses a dashboard button). [seq] increments per line so
+ * repeated identical texts still reach collectors as distinct values.
+ */
+data class CaneSay(val seq: Long, val text: String)
+
+/**
  * BLE central for the qhackcane "Distance Watch" board (Arduino UNO Q).
  *
  * The board's ble-bridge advertises a Nordic UART Service peripheral named
@@ -67,6 +74,10 @@ class CaneBleLink(private val context: Context) {
 
     private val _reading = MutableStateFlow<CaneReading?>(null)
     val reading: StateFlow<CaneReading?> = _reading.asStateFlow()
+
+    private val _say = MutableStateFlow<CaneSay?>(null)
+    val say: StateFlow<CaneSay?> = _say.asStateFlow()
+    private var sayCounter = 0L
 
     private var desired = false
     private var scanning = false
@@ -324,6 +335,10 @@ class CaneBleLink(private val context: Context) {
                 json.has("mm") || json.has("p") -> {
                     val mm = if (!json.has("mm") || json.isNull("mm")) null else json.getInt("mm")
                     _reading.value = CaneReading(mm = mm, present = json.optInt("p", 0) == 1)
+                }
+                json.has("say") -> {
+                    val text = json.getString("say").trim()
+                    if (text.isNotEmpty()) _say.value = CaneSay(++sayCounter, text)
                 }
                 json.has("thr") -> Log.d(TAG, "cane threshold ack: $line")
                 json.has("err") -> Log.w(TAG, "cane error: $line")

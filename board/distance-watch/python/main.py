@@ -66,16 +66,10 @@ ACTION_NAMES = {value: name for name, value in DIRECTIONS.items()}
 # what arrives on the wire (no ramp: commands step straight to full).
 WHEEL_SPEED = 5
 
-# Deterministic on-board obstacle avoidance — engaged only while NO phone is
-# connected over BLE (a connected qhackGPS owns the dodge; it knows the
-# route). Maneuver: turn away from the obstacle while it is present, then
-# counter-turn for AUTO_RECOVER_FRACTION of the avoid time to rejoin the
-# original line, then stop.
-AUTO_AVOID = True
-AUTO_AVOID_DIR = 1           # dodge side: +1 = right, -1 = left
-AUTO_RECOVER_FRACTION = 0.6  # counter-turn fraction of the avoid duration
-AUTO_RECOVER_MIN_S = 0.5
-AUTO_RECOVER_MAX_S = 4.0
+# The board NEVER steers itself. Obstacle presence is streamed to the phone
+# ({"mm","p"} over the NUS bridge) and the phone alone decides — it answers
+# with AVOID/TURN/CLEAR texts that drive the wheel. Without a phone the board
+# only buzzes the vibro.
 
 ui = WebUI()
 
@@ -103,13 +97,11 @@ _state = {
     "motor_busy": False, # driver busy flag from module telemetry
     "vibro_active": False,  # True while the sketch is running the pulse rhythm
     "cane_daemon": False,   # True while the QCane BT daemon socket is connected
-    "auto_steer": "idle",   # on-board avoidance state: idle | avoiding | recovering
     "bt": {"advertising": False, "connected": False, "device": None},
+    "say": {"n": 0, "text": None},  # TTS line for the phone; n bumps per line
     "events": [],        # rolling event log, newest last
 }
-_auto_state = "idle"
-_auto_started = 0.0
-_auto_recover_until = 0.0
+_say_n = 0
 _events = deque(maxlen=EVENT_LOG_LEN)
 _motor_history = deque(maxlen=MOTOR_HISTORY_LEN)
 _presence_streak = 0  # +n consecutive "in" readings, -n "out"; 0 = nothing pending
@@ -156,6 +148,15 @@ def _log_event(msg: str):
         _events.append({"t": time.strftime("%H:%M:%S"), "msg": msg})
     logger.info(msg)
     _emit(force=True)
+
+
+def _say_to_phone(text: str):
+    """Queue one line for the phone to speak. The NUS bridge polls /api/state,
+    forwards a changed line as {"say": ...}, and qhackGPS reads it aloud."""
+    global _say_n
+    with _lock:
+        _say_n += 1
+        _state["say"] = {"n": _say_n, "text": text}
 
 
 # ---- Bluetooth daemon (QCane GATT) socket -----------------------------------
@@ -348,63 +349,14 @@ def _steer_from_text(text: str):
 
 
 def _set_wheel(direction: int, reason: str):
-    global _auto_state
     with _lock:
         changed = _state["motor"] != direction
         _state["motor"] = direction
         _state["wheel_speed"] = WHEEL_SPEED
-        # Any phone/dashboard command takes over from the on-board avoidance.
-        if not reason.startswith("auto") and _auto_state != "idle":
-            _auto_state = "idle"
-            _state["auto_steer"] = "idle"
     if changed:
         _push_actuators()
         word = ACTION_NAMES.get(direction, "stop")
         _log_event(f"Wheel -> {word} ({reason})")
-
-
-def _auto_on_presence(present: bool):
-    """Deterministic on-board avoidance state machine. Runs only while no
-    phone is connected over BLE; every transition goes through _set_wheel
-    with an "auto…" reason, so any real command cancels it instantly."""
-    global _auto_state, _auto_started, _auto_recover_until
-    now = time.monotonic()
-    action = None
-    with _lock:
-        if present:
-            if (AUTO_AVOID and not _state["bt"]["connected"]
-                    and _auto_state != "avoiding"):
-                _auto_state = "avoiding"
-                _auto_started = now
-                _state["auto_steer"] = "avoiding"
-                action = (AUTO_AVOID_DIR,
-                          "auto-avoid: obstacle ahead, dodging "
-                          + ("right" if AUTO_AVOID_DIR > 0 else "left"))
-        elif _auto_state == "avoiding":
-            duration = now - _auto_started
-            recover = max(AUTO_RECOVER_MIN_S,
-                          min(AUTO_RECOVER_MAX_S,
-                              duration * AUTO_RECOVER_FRACTION))
-            _auto_state = "recovering"
-            _auto_recover_until = now + recover
-            _state["auto_steer"] = "recovering"
-            action = (-AUTO_AVOID_DIR,
-                      f"auto-recover: {recover:.1f}s counter-turn back to line")
-    if action:
-        _set_wheel(action[0], action[1])
-
-
-def _auto_tick(now: float):
-    """Finish the counter-turn once its time is up (called from the watchdog)."""
-    global _auto_state
-    done = False
-    with _lock:
-        if _auto_state == "recovering" and now >= _auto_recover_until:
-            _auto_state = "idle"
-            _state["auto_steer"] = "idle"
-            done = True
-    if done:
-        _set_wheel(0, "auto-recover complete, back on line")
 
 
 # ---- Bridge handlers (sketch -> app) ----------------------------------------
@@ -451,13 +403,13 @@ def on_distance_reading(mm: float):
             _win_start_t = now
             _win_count = 0
     if present != was_present:
-        # React to obstacles immediately; steady state rides the heartbeat.
+        # React immediately: vibro + the {"mm","p"} stream the phone decides
+        # from (the bridge pushes presence flips to the phone at once).
         _push_actuators()
         if present:
             _log_event(f"Obstacle at {mm:.0f} mm — vibro on")
         else:
             _log_event("Path clear — vibro off")
-        _auto_on_presence(present)
     _emit()
 
 
@@ -564,12 +516,6 @@ def watchdog():
     if _bt_last_t and (now - _bt_last_t) > 12.0:
         with _lock:
             _state["bt"] = {"advertising": False, "connected": False, "device": None}
-    # On-board avoidance: level-triggered (also engages if the phone drops
-    # while an obstacle is already in front) + finish pending counter-turns.
-    with _lock:
-        present_now = _state["present"]
-    _auto_on_presence(present_now)
-    _auto_tick(now)
     _push_actuators()
     _emit(force=True)
 
@@ -619,6 +565,8 @@ def set_motor_api(payload: dict):
     if direction not in (-1, 0, 1):
         return {"error": 'expected {"dir": -1|0|1}'}
     _set_wheel(direction, "dashboard")
+    _say_to_phone("Dashboard: stop" if direction == 0
+                  else f"Dashboard: spin {ACTION_NAMES[direction]}")
     return {"motor": direction}
 
 
@@ -635,6 +583,7 @@ def pulse_vibro_api(payload: dict):
         logger.debug("Failed to send vibro pulse to the sketch")
         return {"error": "sketch unreachable"}
     _log_event(f"Manual vibro buzz ({ms} ms, dashboard)")
+    _say_to_phone("Dashboard: buzz")
     return {"ms": ms}
 
 
