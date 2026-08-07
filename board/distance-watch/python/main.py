@@ -41,6 +41,7 @@ _state = {
     "motor_duty_pct": 0, # signed PWM duty the sketch applies = voltage as % of VM
     "motor_t": None,     # epoch seconds of the latest motor telemetry sample
     "vm_v": MOTOR_VM_V,  # configured VM supply voltage (volts)
+    "graph_epoch": 0,    # bumped when the graphs are cleared; clients drop buffers
     "motor_busy": False, # driver busy flag from module telemetry
     "vibro_active": False,  # True while the sketch is running the pulse rhythm
     "bt": {"advertising": False, "connected": False, "device": None},
@@ -288,6 +289,16 @@ def pulse_vibro_api(payload: dict):
     return {"ms": ms}
 
 
+def clear_graphs_api(payload: dict):
+    """POST /api/graphs/clear — wipe the motor telemetry history; every open
+    dashboard drops its local buffer when it sees graph_epoch change."""
+    with _lock:
+        _motor_history.clear()
+        _state["graph_epoch"] += 1
+    _log_event("Motor graphs cleared (dashboard)")
+    return {"ok": True}
+
+
 def set_bt(payload: dict):
     """POST /api/bt — advertising/connection status heartbeat from the BLE bridge."""
     global _bt_last_t
@@ -326,6 +337,7 @@ ui.expose_api("POST", "/api/threshold", set_threshold)
 ui.expose_api("POST", "/api/phone", set_phone_msg)
 ui.expose_api("POST", "/api/motor", set_motor_api)
 ui.expose_api("POST", "/api/vibro", pulse_vibro_api)
+ui.expose_api("POST", "/api/graphs/clear", clear_graphs_api)
 ui.expose_api("POST", "/api/bt", set_bt)
 
 logger.info(f"QCane Link starting; presence threshold = {PRESENCE_MAX_MM:.0f} mm; "
