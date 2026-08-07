@@ -1,6 +1,7 @@
 package dev.quad.shepherd.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
@@ -117,6 +118,22 @@ class OverlayView @JvmOverloads constructor(
         }
 
         drawThreatBar(canvas, g.columnThreat)
+        drawGrid(canvas, r)
+    }
+
+    /** v2 BEV traversability grid, bottom-left (debug mode only). */
+    private fun drawGrid(canvas: Canvas, r: FrameResult) {
+        val grid = r.gridDebug ?: return
+        if (r.gridW <= 0 || r.gridH <= 0) return
+        val bmp = Bitmap.createBitmap(grid, r.gridW, r.gridH, Bitmap.Config.ARGB_8888)
+        val cellPx = 4f
+        val left = 16f
+        val top = height - bottomInset - 40f - r.gridH * cellPx
+        val dst = RectF(left, top, left + r.gridW * cellPx, top + r.gridH * cellPx)
+        canvas.drawBitmap(bmp, null, dst, null)
+        // Walker position marker at the bottom-center of the grid
+        textPaint.textSize = 28f
+        canvas.drawText("▲", left + r.gridW * cellPx / 2f - 8f, dst.bottom - 4f, textPaint)
     }
 
     private fun drawThreatBar(canvas: Canvas, threat: FloatArray) {

@@ -47,17 +47,44 @@ object OrtSessions {
         "backend_path" to "libQnnGpu.so",
     )
 
-    fun create(env: OrtEnvironment, modelBytes: ByteArray, tag: String): Created? {
-        attempt(env, modelBytes, GPU_OPTIONS, strict = true, tag, "full-GPU")
-            ?.let { return Created(it, "GPU") }
-        attempt(env, modelBytes, HTP_OPTIONS, strict = true, tag, "full-NPU")
-            ?.let { return Created(it, "NPU") }
-        attempt(env, modelBytes, GPU_OPTIONS, strict = false, tag, "mixed-GPU")
-            ?.let { return Created(it, "GPU/CPU mixed") }
-        attempt(env, modelBytes, HTP_OPTIONS, strict = false, tag, "mixed-NPU")
-            ?.let { return Created(it, "NPU/CPU mixed") }
+    fun create(env: OrtEnvironment, modelBytes: ByteArray, tag: String): Created? =
+        createTiers(tag, preferNpu = false) { opts -> env.createSession(modelBytes, opts) }
+
+    /**
+     * Path-based creation for models with external-data weights (the .data
+     * file is resolved relative to the .onnx path). [preferNpu] flips the
+     * tier order for workloads that should live on the Hexagon (e.g. the
+     * tiny FFNet seg — the GPU is already busy with YOLO + depth).
+     */
+    fun createFromPath(
+        env: OrtEnvironment,
+        modelPath: String,
+        tag: String,
+        preferNpu: Boolean = false,
+    ): Created? = createTiers(tag, preferNpu) { opts -> env.createSession(modelPath, opts) }
+
+    private fun createTiers(
+        tag: String,
+        preferNpu: Boolean,
+        make: (OrtSession.SessionOptions) -> OrtSession,
+    ): Created? {
+        val strictTiers =
+            if (preferNpu) listOf(HTP_OPTIONS to "NPU", GPU_OPTIONS to "GPU")
+            else listOf(GPU_OPTIONS to "GPU", HTP_OPTIONS to "NPU")
+        val mixedTiers =
+            if (preferNpu) listOf(HTP_OPTIONS to "NPU/CPU mixed", GPU_OPTIONS to "GPU/CPU mixed")
+            else listOf(GPU_OPTIONS to "GPU/CPU mixed", HTP_OPTIONS to "NPU/CPU mixed")
+
+        for ((options, label) in strictTiers) {
+            attempt(tag, "full-$label", strict = true, options, make)
+                ?.let { return Created(it, label) }
+        }
+        for ((options, label) in mixedTiers) {
+            attempt(tag, "mixed-$label", strict = false, options, make)
+                ?.let { return Created(it, label) }
+        }
         return try {
-            Created(env.createSession(modelBytes, OrtSession.SessionOptions()), "CPU")
+            Created(make(OrtSession.SessionOptions()), "CPU")
         } catch (e: Exception) {
             Log.e(tag, "CPU session creation failed", e)
             null
@@ -65,17 +92,16 @@ object OrtSessions {
     }
 
     private fun attempt(
-        env: OrtEnvironment,
-        modelBytes: ByteArray,
-        qnnOptions: Map<String, String>,
-        strict: Boolean,
         tag: String,
         label: String,
+        strict: Boolean,
+        qnnOptions: Map<String, String>,
+        make: (OrtSession.SessionOptions) -> OrtSession,
     ): OrtSession? = try {
         val opts = OrtSession.SessionOptions()
         if (strict) opts.addConfigEntry("session.disable_cpu_ep_fallback", "1")
         opts.addQnn(qnnOptions)
-        env.createSession(modelBytes, opts)
+        make(opts)
     } catch (e: Exception) {
         Log.w(tag, "$label session rejected: ${e.message?.take(200)}")
         null

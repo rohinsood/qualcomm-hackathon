@@ -10,6 +10,8 @@ import androidx.camera.core.ImageProxy
 import dev.quad.shepherd.guidance.DepthCalibrator
 import dev.quad.shepherd.guidance.DistanceEstimator
 import dev.quad.shepherd.guidance.GuidanceEngine
+import dev.quad.shepherd.path.PathPipeline
+import dev.quad.shepherd.path.PolarPlanner
 import java.nio.FloatBuffer
 
 /** One processed camera frame: detections in camera-frame pixel space. */
@@ -27,31 +29,35 @@ data class FrameResult(
     val latencyMs: Long,
     /** Depth model latency for frames where it ran; 0 on gated frames. */
     val depthLatencyMs: Long,
-    /** The upright camera frame — reused for LLM scene description. */
+    /** The upright camera frame — reused for OCR and (later) the VLM. */
     val frame: Bitmap,
     /** Colorized depth map cropped to the camera frame (debug mode only). */
     val depthDebug: Bitmap? = null,
     /** Depth analysis band boundaries, in camera-frame Y coordinates. */
     val corridorTop: Float = 0f,
     val corridorBottom: Float = 0f,
+    /** v2: the polar plan from the traversability grid, when active. */
+    val plan: PolarPlanner.Plan? = null,
+    /** v2: BEV grid debug colors (gridW x gridH), debug mode only. */
+    val gridDebug: IntArray? = null,
+    val gridW: Int = 0,
+    val gridH: Int = 0,
 )
 
 /**
  * CameraX analyzer: YUV frame -> upright bitmap -> 640x640 letterbox ->
- * [DetectionEngine] every frame, [DepthEngine] time-gated (walls do not
- * move at frame rate; detection guidance must). Detections are remapped to
- * frame coordinates with distance estimates, and the guidance engine
- * receives per-column metric depth from the freshest depth frame.
- *
- * Detections with known-height pinhole distances nudge the depth model's
- * scale via [DepthCalibrator]; unknown-class detections get their distance
- * read *from* the depth map. With [depthDebugEnabled] the colorized depth
- * map is attached to each result for the on-screen debug view.
+ * [DetectionEngine] every (throttled) frame; [DepthEngine] + [SegEngine]
+ * time-gated. v2: on every depth frame the metric depth map and the FFNet
+ * walkability mask are fused into the [PathPipeline]'s bird's-eye grid,
+ * and the polar planner runs per frame on the accumulated grid — steering
+ * comes from persistent world-space evidence, not a single frame.
  */
 class FrameAnalyzer(
     private val engine: DetectionEngine,
     private val depthEngine: DepthEngine?,
     private val onResult: (FrameResult) -> Unit,
+    private val segEngine: SegEngine? = null,
+    private val path: PathPipeline? = null,
 ) : ImageAnalysis.Analyzer {
 
     companion object {
@@ -64,12 +70,13 @@ class FrameAnalyzer(
          * SoC — guidance needs 10 Hz, not 30.
          */
         private const val MIN_FRAME_INTERVAL_MS = 90L
+
         /** Fixed color ramp range for the debug view (meters). */
         private const val DEBUG_NEAR_M = 0.3f
         private const val DEBUG_FAR_M = 6.0f
     }
 
-    /** Toggled from the UI; when true, results carry a colorized depth map. */
+    /** Toggled from the UI; when true, results carry debug renderings. */
     @Volatile var depthDebugEnabled = false
 
     private val size = DetectionEngine.INPUT_SIZE
@@ -154,12 +161,21 @@ class FrameAnalyzer(
             lastDepthDebug = if (depthDebugEnabled) {
                 colorizeDepth(depth, padX, padY)
             } else null
+
+            // ---- v2: fold this depth frame into the traversability grid
+            path?.let { p ->
+                val seg = segEngine?.segment(upright)
+                p.updateGrid(
+                    metricDepth(depth),
+                    depth.size,
+                    depth.size,
+                    seg?.let { walkableInDepthSpace(it, depth.size, padX, padY, scale, upright) },
+                )
+            }
         }
         if (!depthDebugEnabled) lastDepthDebug = null
 
         // Map 640-space boxes back into camera-frame space; attach distances
-        // (pinhole estimate + close-range corrections + metric depth lookup
-        // for classes without a height prior)
         val sizeF = size.toFloat()
         val detections = modelSpace.map { d ->
             val x1 = ((d.x1 - padX) / scale).coerceIn(0f, upright.width.toFloat())
@@ -183,6 +199,10 @@ class FrameAnalyzer(
             d.copy(x1 = x1, y1 = y1, x2 = x2, y2 = y2, distanceMeters = dist)
         }
 
+        // v2: plan every frame on the persistent grid (cheap raycasts)
+        val plan = path?.plan()
+        val gridDebug = if (depthDebugEnabled) path?.grid?.renderDebug() else null
+
         onResult(
             FrameResult(
                 detections = detections,
@@ -195,8 +215,62 @@ class FrameAnalyzer(
                 depthDebug = lastDepthDebug,
                 corridorTop = (size * DepthEngine.CORRIDOR_TOP - padY) / scale,
                 corridorBottom = (size * DepthEngine.CORRIDOR_BOTTOM - padY) / scale,
+                plan = plan,
+                gridDebug = gridDebug,
+                gridW = path?.grid?.cellsWide ?: 0,
+                gridH = path?.grid?.cellsDeep ?: 0,
             )
         )
+    }
+
+    /** Depth map in meters (calibrator-refined; raw is already metric). */
+    private fun metricDepth(dm: DepthEngine.DepthMap): FloatArray {
+        val n = dm.size * dm.size
+        val out = FloatArray(n)
+        for (i in 0 until n) {
+            val raw = dm.map[i]
+            out[i] = calibrator.convert(raw) ?: raw
+        }
+        return out
+    }
+
+    /**
+     * Sample the FFNet class map into depth-pixel geometry: depth px ->
+     * 640 letterbox space -> source frame -> seg output coords.
+     * 1 = walkable class, 0 = not, -1 = outside the frame.
+     */
+    private fun walkableInDepthSpace(
+        seg: ByteArray,
+        ds: Int,
+        padX: Float,
+        padY: Float,
+        scale: Float,
+        upright: Bitmap,
+    ): ByteArray {
+        val out = ByteArray(ds * ds)
+        val to640 = size.toFloat() / ds
+        val fw = upright.width.toFloat()
+        val fh = upright.height.toFloat()
+        for (dv in 0 until ds) {
+            val sy = (dv * to640 - padY) / scale
+            for (du in 0 until ds) {
+                val sx = (du * to640 - padX) / scale
+                val i = dv * ds + du
+                if (sx < 0f || sy < 0f || sx >= fw || sy >= fh) {
+                    out[i] = -1
+                } else {
+                    val gx = (sx / fw * SegEngine.OUT_W).toInt()
+                        .coerceIn(0, SegEngine.OUT_W - 1)
+                    val gy = (sy / fh * SegEngine.OUT_H).toInt()
+                        .coerceIn(0, SegEngine.OUT_H - 1)
+                    val cls = seg[gy * SegEngine.OUT_W + gx].toInt()
+                    out[i] = if (cls in 0 until SegEngine.NUM_CLASSES &&
+                        SegEngine.WALKABLE_CLASSES[cls]
+                    ) 1 else 0
+                }
+            }
+        }
+        return out
     }
 
     /**

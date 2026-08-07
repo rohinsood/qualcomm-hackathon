@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
@@ -32,17 +36,21 @@ import dev.quad.shepherd.guidance.SteerFusion
 import dev.quad.shepherd.llm.GenieChat
 import dev.quad.shepherd.llm.OcrReader
 import dev.quad.shepherd.nav.NavEngine
+import dev.quad.shepherd.path.PathPipeline
 import dev.quad.shepherd.vision.DepthEngine
 import dev.quad.shepherd.vision.DetectionEngine
 import dev.quad.shepherd.util.DebugLog
 import dev.quad.shepherd.vision.FrameAnalyzer
 import dev.quad.shepherd.vision.FrameResult
+import dev.quad.shepherd.vision.SegEngine
 import dev.quad.shepherd.vision.TrafficLightEye
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
+import kotlin.math.asin
+import kotlin.math.sqrt
 
 /**
  * The always-on brain: camera, vision engines, guidance, blackboard,
@@ -90,7 +98,9 @@ class ShepherdService : LifecycleService() {
 
     private val engine = DetectionEngine()
     private val depthEngine = DepthEngine()
-    private val guidanceEngine = GuidanceEngine()
+    private val segEngine = SegEngine()
+    private val pathPipeline = PathPipeline()
+    private val guidanceEngine = GuidanceEngine() // v1 fallback when no depth model
     private val blackboard = SceneBlackboard()
     val genieChat = GenieChat()
     lateinit var speech: SpeechFeedback
@@ -119,6 +129,23 @@ class ShepherdService : LifecycleService() {
     @Volatile private var uiListener: UiListener? = null
     @Volatile private var thermalNote = ""
     private var lastSeverity = GuidanceEngine.Severity.CLEAR
+    private var lastPlanStop = false
+
+    /** Camera pitch for the BEV grid, from the gravity sensor. */
+    private val gravityListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val gx = event.values[0]
+            val gy = event.values[1]
+            val gz = event.values[2]
+            val g = sqrt(gx * gx + gy * gy + gz * gz)
+            if (g > 1f) {
+                // Rear camera looks along -Z; pitch-down = asin(gz/|g|)
+                pathPipeline.pitchRad = asin((gz / g).coerceIn(-1f, 1f))
+            }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
 
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
         thermalNote = if (status >= PowerManager.THERMAL_STATUS_MODERATE) " · warm" else ""
@@ -134,6 +161,11 @@ class ShepherdService : LifecycleService() {
         startForeground(NOTIFICATION_ID, buildNotification(), foregroundTypes())
         (getSystemService(POWER_SERVICE) as PowerManager)
             .addThermalStatusListener(thermalListener)
+        (getSystemService(SENSOR_SERVICE) as SensorManager).let { sm ->
+            sm.getDefaultSensor(Sensor.TYPE_GRAVITY)?.let {
+                sm.registerListener(gravityListener, it, SensorManager.SENSOR_DELAY_UI)
+            }
+        }
         VoiceFetcher.ensureAsync(this, lifecycleScope) {
             speech.reloadNeural(this)
             speech.announce("Neural voice installed.")
@@ -175,7 +207,10 @@ class ShepherdService : LifecycleService() {
         lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 val detectionOk = engine.initialize(this@ShepherdService)
-                if (detectionOk) depthEngine.initialize(this@ShepherdService)
+                if (detectionOk) {
+                    depthEngine.initialize(this@ShepherdService)
+                    segEngine.initialize(this@ShepherdService)
+                }
                 detectionOk
             }
             if (!ok) {
@@ -187,6 +222,9 @@ class ShepherdService : LifecycleService() {
                 append(engine.activeProvider)
                 if (depthEngine.available) {
                     append(" +depth(").append(depthEngine.activeProvider).append(")")
+                }
+                if (segEngine.available) {
+                    append(" +seg(").append(segEngine.activeProvider).append(")")
                 }
             }
             DebugLog.d("VIS", visionLabel)
@@ -206,7 +244,13 @@ class ShepherdService : LifecycleService() {
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            val fa = FrameAnalyzer(engine, depthEngine, ::onFrame)
+            val fa = FrameAnalyzer(
+                engine,
+                depthEngine,
+                ::onFrame,
+                segEngine.takeIf { it.available },
+                pathPipeline.takeIf { depthEngine.available },
+            )
             analyzer = fa
             analysis.setAnalyzer(analysisExecutor, fa)
 
@@ -237,9 +281,19 @@ class ShepherdService : LifecycleService() {
         latestFrame = result.frame
         val now = SystemClock.elapsedRealtime()
         val detections = TrafficLightEye.decorate(result.detections, result.frame)
-        val guidance = guidanceEngine.update(
+        // Feed the route goal to the planner for the NEXT frame's plan
+        pathPipeline.goalAngleDeg = navEngine.goalSteer?.let { it * 60f }
+        // v2: guidance comes from the polar plan on the BEV grid; the v1
+        // column engine remains the fallback when depth/seg models are absent
+        val guidance = result.plan?.guidance ?: guidanceEngine.update(
             detections, result.frameWidth, result.columnDistances, now,
         )
+        result.plan?.let { p ->
+            if (p.stop != lastPlanStop) {
+                lastPlanStop = p.stop
+                if (p.stop) DebugLog.d("PLAN", "no corridor — STOP")
+            }
+        }
         blackboard.updateFrame(detections, result.frameWidth)
         blackboard.updateGuidance(guidance)
         // Nothing about obstacles is spoken; danger onsets are logged so the
@@ -257,9 +311,11 @@ class ShepherdService : LifecycleService() {
         }
         lastSeverity = guidance.severity
         blackboard.navSummary = navEngine.summary
-        // Shepherd-style fusion: the route's goal bias is added scaled by
-        // (1 - obstacle proximity), so avoidance always outranks the map
-        val fused = guidance.copy(steer = SteerFusion.fuse(guidance, navEngine.goalSteer))
+        // With the polar plan active the route goal is already inside the
+        // planner's cost function; the additive fusion only serves the
+        // v1 fallback path
+        val fused = if (result.plan != null) guidance
+        else guidance.copy(steer = SteerFusion.fuse(guidance, navEngine.goalSteer))
         actuator.sendGuidance(fused)
         // Haptics follow the FUSED command so turns are felt, not just seen
         if (guidanceEnabled) haptics.update(fused)
@@ -366,12 +422,15 @@ class ShepherdService : LifecycleService() {
     override fun onDestroy() {
         (getSystemService(POWER_SERVICE) as PowerManager)
             .removeThermalStatusListener(thermalListener)
+        (getSystemService(SENSOR_SERVICE) as SensorManager)
+            .unregisterListener(gravityListener)
         navEngine.stop(announce = false)
         genieChat.close()
         speech.shutdown()
         ocr.close()
         actuator.disconnect()
         analysisExecutor.shutdown()
+        segEngine.close()
         depthEngine.close()
         engine.close()
         super.onDestroy()
