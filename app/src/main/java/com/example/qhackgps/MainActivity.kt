@@ -137,9 +137,6 @@ private const val ALIGN_EXIT_DEG = 25f
 /** Nominal turn (degrees) exported while steering the user around an obstacle. */
 private const val AVOID_TURN_DEG = 45
 
-/** Route turns smaller than this are not sent to the cane wheel (deadband). */
-private const val CANE_TURN_MIN_DEG = 15
-
 /**
  * Below this speed a GPS bearing is mostly noise, so it can't be used as the
  * reference when calibrating the compass. Roughly a slow walk.
@@ -409,7 +406,6 @@ fun NavigatorScreen() {
     LaunchedEffect(Unit) {
         var lastObstacle = false
         var lastSpokenDir = TurnDirection.NONE
-        var lastSpokenBucket = -1
         var lastTurnSpokenAt = 0L
         var arrivalAnnounced = false
         GuidanceBus.updates.collect { update ->
@@ -442,21 +438,19 @@ fun NavigatorScreen() {
                 arrivalAnnounced = false
             }
 
-            // Route guidance while the path is clear: 15-degree buckets,
-            // minimum 3.5 s between prompts.
-            if (!update.obstaclePresent) {
-                val bucket = update.deltaDeg / 15
-                val changed = update.direction != lastSpokenDir || bucket != lastSpokenBucket
-                if (changed && now - lastTurnSpokenAt > 3500L) {
+            // Route guidance while the path is clear: speak ONLY on a
+            // direction transition (left/right/straight), never on degree
+            // drift — repeating the same instruction is worse than silence.
+            if (!update.obstaclePresent && update.direction != lastSpokenDir) {
+                if (now - lastTurnSpokenAt > 2000L) {
                     val line = when (update.direction) {
-                        TurnDirection.LEFT -> "Turn left, about ${update.deltaDeg} degrees."
-                        TurnDirection.RIGHT -> "Turn right, about ${update.deltaDeg} degrees."
-                        TurnDirection.STRAIGHT -> "On course, go straight."
+                        TurnDirection.LEFT -> "Turn left."
+                        TurnDirection.RIGHT -> "Turn right."
+                        TurnDirection.STRAIGHT -> "Straight ahead."
                         TurnDirection.NONE -> null
                     }
                     if (line != null) {
                         lastSpokenDir = update.direction
-                        lastSpokenBucket = bucket
                         lastTurnSpokenAt = now
                         speech.announce(line)
                     }
@@ -523,13 +517,17 @@ fun NavigatorScreen() {
     // starts the wheel turning the moment guidance calls it), CLEAR when
     // aligned or idle. Degrees are bucketed to 5° so a BLE write only fires on
     // a real change; each message also shows on the cane's dashboard.
+    // Hard turn in whatever direction the phone decides, no deadband: the
+    // wheel spins at full scale from the moment guidance calls a turn until
+    // the aligned hysteresis deems the user straight (routeDirection ->
+    // STRAIGHT -> CLEAR). Degrees ride along for the dashboard/log only —
+    // the board drives 100% regardless.
     val caneSteerMsg = when {
         avoidance == TurnDirection.LEFT -> "AVOID LEFT"
         avoidance == TurnDirection.RIGHT -> "AVOID RIGHT"
         routeDirection == TurnDirection.LEFT || routeDirection == TurnDirection.RIGHT -> {
             val deg = headingDelta?.let { abs(it).roundToInt() } ?: 0
-            if (deg < CANE_TURN_MIN_DEG) "CLEAR"
-            else "TURN ${if (routeDirection == TurnDirection.LEFT) "LEFT" else "RIGHT"} ${(deg / 5) * 5}"
+            "TURN ${if (routeDirection == TurnDirection.LEFT) "LEFT" else "RIGHT"} ${(deg / 5) * 5}"
         }
         else -> "CLEAR"
     }
