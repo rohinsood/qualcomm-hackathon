@@ -1,5 +1,6 @@
 package dev.quad.shepherd.path
 
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.round
 import kotlin.math.sin
@@ -36,6 +37,9 @@ class TraversabilityGrid(
 
         /** Flat-but-not-walkable (per segmentation): soft obstacle. */
         const val L_SOFT_OBSTACLE = 0.35f
+
+        /** Seg-only evidence saturates below the blocking threshold. */
+        const val SOFT_CAP = 0.55f
 
         const val L_CLAMP = 4f
 
@@ -82,6 +86,7 @@ class TraversabilityGrid(
         pitchRad: Float,
         cameraHeightM: Float,
         hFovDeg: Float,
+        rollRad: Float = 0f,
     ) {
         decay()
 
@@ -90,7 +95,46 @@ class TraversabilityGrid(
         val cy = depthH / 2f
         val cosP = cos(pitchRad)
         val sinP = sin(pitchRad)
+        // Roll: a tilted (or sideways-propped) phone rotates the image about
+        // the optical axis; un-roll image-plane coords into gravity alignment
+        val cosR = cos(rollRad)
+        val sinR = sin(rollRad)
         val halfWidthCells = cellsWide / 2
+
+        // Self-calibrate the ground level: the nominal camera height is a
+        // guess, and a ±10 cm error would reclassify the whole floor as an
+        // obstacle band. The median height of near points in the lower
+        // image third is a robust per-frame ground-offset estimate.
+        // Roll-agnostic: sample heights across the WHOLE frame and take the
+        // 25th percentile — the floor is the lowest large surface however
+        // the phone is oriented (image-bottom-third sampling broke when the
+        // phone was propped sideways).
+        var groundOffset = 0f
+        run {
+            val samples = FloatArray(512)
+            var n = 0
+            var sv = 0
+            while (sv < depthH && n < samples.size) {
+                var su = 0
+                while (su < depthW && n < samples.size) {
+                    val d = depth[sv * depthW + su]
+                    if (d.isFinite() && d in MIN_DEPTH_M..5f) {
+                        val xi = (su - cx) / fx * d
+                        val yi = -((sv - cy) / fx * d)
+                        val yUp = -xi * sinR + yi * cosR
+                        samples[n++] = cameraHeightM + (yUp * cosP - d * sinP)
+                    }
+                    su += 7
+                }
+                sv += 5
+            }
+            if (n >= 60) {
+                val sorted = samples.copyOf(n)
+                sorted.sort()
+                val p25 = sorted[n / 4]
+                if (abs(p25) < 0.7f) groundOffset = p25
+            }
+        }
 
         var v = 0
         while (v < depthH) {
@@ -98,13 +142,15 @@ class TraversabilityGrid(
             while (u < depthW) {
                 val d = depth[v * depthW + u]
                 if (d.isFinite() && d in MIN_DEPTH_M..MAX_DEPTH_M) {
-                    // Camera frame: xc right, yUp up, zc forward
-                    val xc = (u - cx) / fx * d
-                    val yUp = -((v - cy) / fx * d)
-                    // Rotate into the gravity-aligned frame (pitch down = θ)
+                    // Camera frame: xi right, yi up (image), zc forward
+                    val xi = (u - cx) / fx * d
+                    val yi = -((v - cy) / fx * d)
+                    // Un-roll about the optical axis, then pitch about X
+                    val xc = xi * cosR + yi * sinR
+                    val yUp = -xi * sinR + yi * cosR
                     val yW = yUp * cosP - d * sinP
                     val zW = yUp * sinP + d * cosP
-                    val height = cameraHeightM + yW
+                    val height = cameraHeightM + yW - groundOffset
 
                     if (zW > 0f) {
                         val ix = halfWidthCells + round(xc / cellMeters).toInt()
@@ -116,7 +162,12 @@ class TraversabilityGrid(
                                     height < OBSTACLE_MAX_HEIGHT_M -> L_OBSTACLE
                                 kotlin.math.abs(height) <= GROUND_TOLERANCE_M -> {
                                     when (walkable?.get(v * depthW + u)?.toInt()) {
-                                        0 -> L_SOFT_OBSTACLE // flat but not walkable
+                                        // Flat but seg says not walkable:
+                                        // suspicious, yet NEVER allowed to
+                                        // cross the blocking threshold on
+                                        // seg evidence alone (Cityscapes is
+                                        // out-of-domain indoors)
+                                        0 -> if (logOdds[i] < SOFT_CAP) L_SOFT_OBSTACLE else 0f
                                         else -> L_FREE
                                     }
                                 }

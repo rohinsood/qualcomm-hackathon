@@ -128,7 +128,8 @@ class OverlayView @JvmOverloads constructor(
         val bmp = Bitmap.createBitmap(grid, r.gridW, r.gridH, Bitmap.Config.ARGB_8888)
         val cellPx = 4f
         val left = 16f
-        val top = height - bottomInset - 40f - r.gridH * cellPx
+        // Left-middle: clear of the steer panel and talk button below
+        val top = height * 0.42f - r.gridH * cellPx / 2f
         val dst = RectF(left, top, left + r.gridW * cellPx, top + r.gridH * cellPx)
         canvas.drawBitmap(bmp, null, dst, null)
         // Walker position marker at the bottom-center of the grid

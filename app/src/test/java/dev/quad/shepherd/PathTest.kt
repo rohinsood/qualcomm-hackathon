@@ -3,6 +3,7 @@ package dev.quad.shepherd
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.path.PolarPlanner
 import dev.quad.shepherd.path.TraversabilityGrid
+import dev.quad.shepherd.path.WalkableColumns
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -176,5 +177,34 @@ class PathTest {
         val plan = planner.plan(freshGrid(), null)
         assertNull(plan.guidance.nearestLabel)
         assertNull(plan.guidance.nearestDistanceMeters)
+    }
+
+    // ---- Walkable-fraction columns (Wayfinder signal) -------------------
+
+    @Test
+    fun `walkable columns measure per-column fractions`() {
+        // 32x16 mask: left half sidewalk (1), right half building (2)
+        val mask = ByteArray(32 * 16) { i -> if (i % 32 < 16) 1 else 2 }
+        val walkable = BooleanArray(19).also { it[1] = true }
+        val cols = WalkableColumns.clearance(mask, 32, 16, walkable)
+        assertEquals(WalkableColumns.NUM_COLUMNS, cols.size)
+        assertTrue(cols[0] > 0.95f)
+        assertTrue(cols[WalkableColumns.NUM_COLUMNS - 1] < 0.05f)
+    }
+
+    @Test
+    fun `seg columns override a projection-artifact stop with cautious steer`() {
+        val grid = freshGrid()
+        enclosure(grid, 1.4f) // geometry says: nowhere to go
+        val planner = PolarPlanner()
+        // Segmentation clearly sees an opening on the right side
+        val seg = FloatArray(WalkableColumns.NUM_COLUMNS) { c -> if (c >= 12) 0.9f else 0.1f }
+        val plan = planner.plan(grid, null, seg, 70f)
+        assertFalse(plan.stop)
+        assertEquals(GuidanceEngine.Severity.CAUTION, plan.guidance.severity)
+        assertTrue("steer ${plan.guidance.steer}", plan.guidance.steer > 0.05f)
+        // Without the seg signal the same grid must still STOP
+        val planNoSeg = PolarPlanner().plan(grid, null)
+        assertTrue(planNoSeg.stop)
     }
 }
