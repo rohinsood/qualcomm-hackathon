@@ -283,9 +283,8 @@ class CaneBleLink(private val context: Context) {
         }
         Log.d(TAG, "cane: connected, notifications on")
         _state.value = CaneLinkState.Connected(name)
-        // Widen the cane's presence threshold so "object in the way" fires early
-        // enough to steer around it while walking (the board defaults to 300 mm).
-        write(OBSTACLE_THRESHOLD_MM.toString())
+        // Safety hello: make sure the wheel is stopped until guidance speaks
+        write("s")
     }
 
     private fun teardownLocked() {
@@ -362,9 +361,12 @@ class CaneBleLink(private val context: Context) {
         /** Presence threshold (mm) pushed to the cane on connect. */
         const val OBSTACLE_THRESHOLD_MM = 1200
 
-        val NUS_SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
-        val NUS_RX_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
-        val NUS_TX_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+        // QCane wheel board GATT (board/qcane-wheel/README.md). RX = the
+        // command characteristic we write motor letters to; TX = the state
+        // characteristic ("<action>:<speed>") the board notifies on.
+        val NUS_SERVICE_UUID: UUID = UUID.fromString("bcf2f193-f22b-4695-af5e-fd3b9caf4977")
+        val NUS_RX_UUID: UUID = UUID.fromString("bcf2f194-f22b-4695-af5e-fd3b9caf4977")
+        val NUS_TX_UUID: UUID = UUID.fromString("bcf2f195-f22b-4695-af5e-fd3b9caf4977")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         /** BLE scanning needs BLUETOOTH_SCAN on 12+, fine location before that. */
