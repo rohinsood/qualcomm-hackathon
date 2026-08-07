@@ -105,10 +105,22 @@ class FrameAnalyzer(
         val bitmap = image.toBitmap()
         image.close()
 
-        val upright = if (rotation != 0) {
+        val sensorUpright = if (rotation != 0) {
             val m = Matrix().apply { postRotate(rotation.toFloat()) }
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, false)
         } else bitmap
+
+        // Gravity-upright: when the phone is held landscape (or upside
+        // down), rotate the frame so the depth and seg models — which are
+        // NOT rotation-invariant — always see an upright world. The angle
+        // comes from the gravity roll, snapped to 90 degrees.
+        val gravityDeg = path?.gravityUprightDeg ?: 0
+        val upright = if (gravityDeg != 0) {
+            val gm = Matrix().apply { postRotate(-gravityDeg.toFloat()) }
+            Bitmap.createBitmap(
+                sensorUpright, 0, 0, sensorUpright.width, sensorUpright.height, gm, false,
+            )
+        } else sensorUpright
 
         // Letterbox into 640x640, preserving aspect ratio
         val scale = size.toFloat() / maxOf(upright.width, upright.height)

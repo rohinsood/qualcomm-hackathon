@@ -16,6 +16,22 @@ class PathPipeline(
     /** Camera roll about the optical axis, from the gravity sensor. */
     @Volatile var rollRad = 0f
 
+    /**
+     * Roll snapped to the nearest 90°: the frame is pre-rotated by this
+     * before inference (depth/seg models are not rotation-invariant), so
+     * landscape operation works natively.
+     */
+    val gravityUprightDeg: Int
+        get() {
+            val deg = Math.toDegrees(rollRad.toDouble())
+            val snapped = (Math.round(deg / 90.0) * 90).toInt() % 360
+            return if (snapped == -270) 90 else if (snapped == 270) -90 else snapped
+        }
+
+    /** Roll left over after the 90° snap — what the grid still corrects. */
+    private fun residualRollRad(): Float =
+        rollRad - Math.toRadians(gravityUprightDeg.toDouble()).toFloat()
+
     /** Route goal angle in degrees (from NavEngine steer), or null. */
     @Volatile var goalAngleDeg: Float? = null
 
@@ -28,7 +44,10 @@ class PathPipeline(
 
     /** Fold a fresh metric depth frame (+ walkability mask) into the grid. */
     fun updateGrid(depthMeters: FloatArray, w: Int, h: Int, walkable: ByteArray?) {
-        grid.update(depthMeters, w, h, walkable, pitchRad, cameraHeightM, hFovDeg, rollRad)
+        grid.update(
+            depthMeters, w, h, walkable, pitchRad, cameraHeightM, hFovDeg,
+            residualRollRad(),
+        )
     }
 
     /** Plan on the persistent grid; callable every frame. */
