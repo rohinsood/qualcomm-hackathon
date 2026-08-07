@@ -66,10 +66,23 @@ class OverlayView @JvmOverloads constructor(
         val r = result ?: return
         val g = guidance ?: return
 
-        // fitCenter transform from frame space to view space
-        val scale = minOf(width.toFloat() / r.frameWidth, height.toFloat() / r.frameHeight)
-        val offsetX = (width - r.frameWidth * scale) / 2f
-        val offsetY = (height - r.frameHeight * scale) / 2f
+        // Landscape support: the processed frame is gravity-upright; rotate
+        // the canvas by the same snap so the depth/path debug views appear
+        // upright to a viewer holding the phone sideways.
+        val rot = r.gravityDeg
+        val swap = rot % 180 != 0
+        val vw = if (swap) height.toFloat() else width.toFloat()
+        val vh = if (swap) width.toFloat() else height.toFloat()
+        if (rot != 0) {
+            canvas.save()
+            canvas.rotate(rot.toFloat(), width / 2f, height / 2f)
+            canvas.translate((width - vw) / 2f, (height - vh) / 2f)
+        }
+
+        // fitCenter transform from frame space to (rotated) view space
+        val scale = minOf(vw / r.frameWidth, vh / r.frameHeight)
+        val offsetX = (vw - r.frameWidth * scale) / 2f
+        val offsetY = (vh - r.frameHeight * scale) / 2f
         val frameRect = RectF(
             offsetX, offsetY,
             offsetX + r.frameWidth * scale, offsetY + r.frameHeight * scale,
@@ -117,19 +130,23 @@ class OverlayView @JvmOverloads constructor(
             canvas.drawText(label, x1 + 8f, y1 - 10f, textPaint)
         }
 
+        drawGrid(canvas, r, vh, rot != 0)
+        if (rot != 0) canvas.restore()
         drawThreatBar(canvas, g.columnThreat)
-        drawGrid(canvas, r)
     }
 
-    /** v2 BEV traversability grid, bottom-left (debug mode only). */
-    private fun drawGrid(canvas: Canvas, r: FrameResult) {
+    /** v2 BEV traversability grid (debug mode only). */
+    private fun drawGrid(canvas: Canvas, r: FrameResult, viewH: Float, rotated: Boolean) {
         val grid = r.gridDebug ?: return
         if (r.gridW <= 0 || r.gridH <= 0) return
         val bmp = Bitmap.createBitmap(grid, r.gridW, r.gridH, Bitmap.Config.ARGB_8888)
         val cellPx = 4f
-        val left = 16f
-        // Left-middle: clear of the steer panel and talk button below
-        val top = height * 0.42f - r.gridH * cellPx / 2f
+        // Rotated viewing: top-center of the rotated viewport maps onto a
+        // screen side-edge middle for either landscape direction — always
+        // fully visible. Portrait keeps the left-middle spot clear of the
+        // steer panel and talk button.
+        val left = if (rotated) (width.coerceAtLeast(height) - r.gridW * cellPx) / 2f else 16f
+        val top = if (rotated) 48f else viewH * 0.42f - r.gridH * cellPx / 2f
         val dst = RectF(left, top, left + r.gridW * cellPx, top + r.gridH * cellPx)
         canvas.drawBitmap(bmp, null, dst, null)
         // Walker position marker at the bottom-center of the grid

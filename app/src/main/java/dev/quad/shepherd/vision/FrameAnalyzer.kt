@@ -43,6 +43,8 @@ data class FrameResult(
     val gridDebug: IntArray? = null,
     val gridW: Int = 0,
     val gridH: Int = 0,
+    /** Gravity snap applied to this frame; the overlay counter-rotates. */
+    val gravityDeg: Int = 0,
 )
 
 /**
@@ -237,6 +239,7 @@ class FrameAnalyzer(
                 gridDebug = gridDebug,
                 gridW = path?.grid?.cellsWide ?: 0,
                 gridH = path?.grid?.cellsDeep ?: 0,
+                gravityDeg = gravityDeg,
             )
         )
     }
