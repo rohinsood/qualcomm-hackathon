@@ -417,7 +417,10 @@ class ShepherdService : LifecycleService() {
             while (true) {
                 delay(CommandAggregator.PERIOD_MS)
                 val letter = aggregator.decide()
-                caneLink.write(letter.toString())
+                // ":5" = full scale. The daemon's default is speed 3 (60%
+                // duty), which left the wheel too subtle to feel through a
+                // cane grip; the board parses "l:5" as left at 100%.
+                caneLink.write("$letter:5")
                 if (letter != lastMotorLetter) {
                     lastMotorLetter = letter
                     DebugLog.d("BT", "motor → $letter")
