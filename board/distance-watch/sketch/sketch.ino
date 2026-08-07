@@ -8,8 +8,8 @@ ModulinoDistance distance;  // VL53L4CD/VL53L4ED time-of-flight sensor
 ModulinoMotors motors;      // MAX22211 dual H-bridge; DC motor on channel A (terminals 1A/2A)
 ModulinoVibro vibro;        // haptic vibration motor
 
-// Steering spin speed, percent of full scale.
-constexpr int MOTOR_SPEED_PCT = 60;
+// Steering spin speed, percent of full scale (100 = full VM across the motor).
+constexpr int MOTOR_SPEED_PCT = 100;
 constexpr int16_t MOTOR_RAW_SPEED =
     (int32_t)ModulinoMotors::MAX_SPEED * MOTOR_SPEED_PCT / 100;
 

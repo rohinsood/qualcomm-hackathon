@@ -17,6 +17,9 @@ EMIT_MIN_INTERVAL_S = 0.05
 EVENT_LOG_LEN = 30
 # Motor telemetry history depth for the dashboard graphs (2 Hz -> 2 minutes).
 MOTOR_HISTORY_LEN = 240
+# Motor supply voltage wired into the Modulino Motors VM terminals. The module
+# cannot measure VM, so the dashboard computes applied volts as duty x VM.
+MOTOR_VM_V = 5.0
 
 ui = WebUI()
 
@@ -37,6 +40,7 @@ _state = {
     "motor_applied": 0,  # direction the sketch is actually applying right now
     "motor_duty_pct": 0, # signed PWM duty the sketch applies = voltage as % of VM
     "motor_t": None,     # epoch seconds of the latest motor telemetry sample
+    "vm_v": MOTOR_VM_V,  # configured VM supply voltage (volts)
     "motor_busy": False, # driver busy flag from module telemetry
     "vibro_active": False,  # True while the sketch is running the pulse rhythm
     "bt": {"advertising": False, "connected": False, "device": None},

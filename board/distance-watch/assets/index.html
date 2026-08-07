@@ -84,19 +84,20 @@
 
       <div class="chart" id="chart-duty-wrap">
         <div class="chart-head">
-          <span class="chart-title">applied voltage &middot; signed duty, % of VM &middot; last 2 min</span>
+          <span class="chart-title">applied motor voltage &middot; last 2 min</span>
           <span id="chart-duty-now" class="chart-now">&mdash;</span>
         </div>
         <div class="chart-body">
-          <svg id="chart-duty" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Applied motor voltage history as signed duty percentage of VM"></svg>
+          <svg id="chart-duty" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Applied motor voltage history in volts"></svg>
           <span id="chart-duty-max" class="chart-y chart-y-top"></span>
           <span id="chart-duty-min" class="chart-y chart-y-bottom"></span>
         </div>
       </div>
 
-      <p class="hint">The module firmware reports current sense only &mdash; VM voltage is not
-        readable over I&sup2;C, so the voltage graph shows the applied H-bridge output as
-        signed PWM duty (average output = duty &times; VM). Yellow VM LED on the module =
+      <p class="hint">The module firmware reports current sense only &mdash; VM is not readable
+        over I&sup2;C, so applied voltage is computed as PWM duty &times; VM with VM = 5&nbsp;V
+        (the supply wired to the terminals; set in <code>main.py</code> <code>MOTOR_VM_V</code>).
+        Full spin drives &plusmn;100&nbsp;% duty = &plusmn;5&nbsp;V. Yellow VM LED on the module =
         motor power present.</p>
     </section>
 
