@@ -103,6 +103,17 @@ class ShepherdService : LifecycleService() {
     /** UI hooks; called on arbitrary threads — implementors post to main. */
     interface UiListener {
         fun onFrame(result: FrameResult, guidance: GuidanceEngine.Guidance)
+
+        /**
+         * The areamap path, which has no camera frame to hand over.
+         *
+         * Everything the UI refreshes — status line, map centring, overlay
+         * — used to hang off [onFrame], so standing CameraX down for
+         * ARCore froze the whole HUD: the status stayed on its startup
+         * placeholder and the map never left the Gulf of Guinea. Guidance
+         * still moves without a bitmap, so it gets its own callback.
+         */
+        fun onGuidance(guidance: GuidanceEngine.Guidance) {}
     }
 
     private val binder = LocalBinder()
@@ -328,6 +339,7 @@ class ShepherdService : LifecycleService() {
             )
         }
         visionLabel = poseProvider.status() + " · " + areaMapper.debugLine()
+        uiListener?.onGuidance(guidance)
     }
 
     override fun onBind(intent: Intent): IBinder {

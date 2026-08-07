@@ -55,11 +55,20 @@ class ArCoreTracker(private val appContext: Context) {
 
         /**
          * A pose discontinuity larger than this is relocalisation, not
-         * walking. Nobody covers 2.5 m between two camera frames, and
-         * integrating depth across the jump smears a second copy of the
-         * world into the map.
+         * walking. Nobody covers 3.5 m between two 30 Hz camera frames,
+         * and integrating depth across the jump smears a second copy of
+         * the world into the map.
          */
-        const val JUMP_THRESHOLD_M = 2.5
+        const val JUMP_THRESHOLD_M = 3.5
+
+        /**
+         * Jumps are ignored for this long after tracking starts. ARCore
+         * refines its world estimate hard while it initialises, and a
+         * correction then is normal rather than a relocalisation — the
+         * first field run dropped the map 26 s in for exactly this.
+         * There is nothing in the map worth protecting that early anyway.
+         */
+        const val SETTLE_MS = 8_000L
 
         /** Fallback if no floor plane has been found yet. */
         const val DEFAULT_CAMERA_HEIGHT_M = 1.4f
@@ -126,6 +135,7 @@ class ArCoreTracker(private val appContext: Context) {
 
     private var lastTx = Float.NaN
     private var lastTz = Float.NaN
+    private var trackingSinceMs = 0L
     private var groundY = Float.NaN
     private var lastPlaneScanMs = 0L
 
@@ -259,23 +269,38 @@ class ArCoreTracker(private val appContext: Context) {
         val ty = pose.ty()
         val tz = pose.tz()
 
-        // Relocalisation check BEFORE anything is stamped
+        if (!tracking) {
+            tracking = true
+            trackingSinceMs = SystemClock.elapsedRealtime()
+            status = "tracking"
+        }
+
+        // Relocalisation check BEFORE anything is stamped.
+        //
+        // Dropping the map is the safe response, not the clever one: a
+        // correction of this size means every cell already stamped is
+        // metres out of place, and a map that is confidently wrong steers
+        // someone into what it thinks is clear. The map rebuilds in
+        // seconds, so the cost of dropping it is small. (The better fix
+        // is to carry a cumulative pose offset so the map keeps its own
+        // self-consistent frame and only the route needs re-projecting —
+        // worth doing if corrections turn out to be common in the field.)
+        val settled = SystemClock.elapsedRealtime() - trackingSinceMs > SETTLE_MS
         if (!lastTx.isNaN()) {
             val jump = ArPoseMath.planarJumpM(lastTx, lastTz, tx, tz)
             if (jump > JUMP_THRESHOLD_M) {
-                epoch++
-                Log.w(TAG, "pose jumped %.1f m - new epoch %d".format(jump, epoch))
-                listener?.onEpochChanged(epoch)
-                groundY = Float.NaN
+                if (settled) {
+                    epoch++
+                    Log.w(TAG, "pose jumped %.1f m - new epoch %d".format(jump, epoch))
+                    listener?.onEpochChanged(epoch)
+                    groundY = Float.NaN
+                } else {
+                    Log.i(TAG, "pose jumped %.1f m while settling - ignored".format(jump))
+                }
             }
         }
         lastTx = tx
         lastTz = tz
-
-        if (!tracking) {
-            tracking = true
-            status = "tracking"
-        }
 
         val zAxis = pose.zAxis
         val xAxis = pose.xAxis

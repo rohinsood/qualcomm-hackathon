@@ -107,6 +107,17 @@ class MainActivity : AppCompatActivity() {
                 updateNavMap()
             }
         }
+
+        /** Areamap path: no camera frame, but the HUD must still live. */
+        override fun onGuidance(guidance: GuidanceEngine.Guidance) {
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (!benching) {
+                    binding.statusText.text = service?.statusLine(0, 0) ?: ""
+                }
+                updateNavMap()
+            }
+        }
     }
 
     private val connection = object : ServiceConnection {
