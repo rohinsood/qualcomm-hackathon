@@ -1,5 +1,0 @@
-name: Distance Watch
-icon: 📏
-description: QCane Link dashboard — live informatics for every Modulino (distance, motor currents, vibro, BLE) with manual motor/vibro controls; vibro buzz on obstacle, steering motor on phone or dashboard command.
-bricks:
-  - arduino:web_ui

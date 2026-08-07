@@ -5,6 +5,15 @@ Spins a wheel motor left or right from a Bluetooth command. The motor is a
 is doing — a wheel spinning clockwise, counter-clockwise, or sitting still,
 with a bar on the side it is turning towards.
 
+**This is now the merged cane app** (absorbed the former `distance-watch`):
+on top of the wheel it reads the **Modulino Distance** sensor, pulses the
+**Modulino Vibro** while an object is inside the presence threshold, streams
+telemetry to the **QCane Link dashboard** on port 7000 (per-module cards,
+live current/voltage graphs, manual spin + buzz buttons), and stops every
+output within 2 s if the Linux side goes quiet (failsafe). See
+[`../README.md`](../README.md) for the full-system picture; everything below
+documents the Bluetooth contract, which is unchanged.
+
 Two Bluetooth transports are exposed at the same time — pick whichever is
 easier on the phone side.
 
