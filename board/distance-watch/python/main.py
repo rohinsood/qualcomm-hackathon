@@ -61,12 +61,9 @@ MAX_BUFFER = 64 * 1024
 # Sketch-side convention for set_wheel(dir, speed).
 DIRECTIONS = {"left": -1, "stop": 0, "right": 1}
 ACTION_NAMES = {value: name for name, value in DIRECTIONS.items()}
-DEFAULT_SPEED = 3    # phone commands without a speed
-DASHBOARD_SPEED = 5  # dashboard buttons always drive full scale
-
-# Wheel speed for route turns from the phone ("TURN LEFT 90"), by degrees off
-# course: first row whose min_deg the angle reaches wins.
-TURN_SPEED_TABLE = ((75, 5), (45, 4), (30, 3), (0, 2))
+# Every spin runs at full scale (100% duty) — no graded speeds; phone/daemon
+# speed hints are ignored. The sketch's leaky integrator still ramps smoothly.
+WHEEL_SPEED = 5
 
 # Deterministic on-board obstacle avoidance — engaged only while NO phone is
 # connected over BLE (a connected qhackGPS owns the dodge; it knows the
@@ -78,14 +75,6 @@ AUTO_AVOID_DIR = 1           # dodge side: +1 = right, -1 = left
 AUTO_RECOVER_FRACTION = 0.6  # counter-turn fraction of the avoid duration
 AUTO_RECOVER_MIN_S = 0.5
 AUTO_RECOVER_MAX_S = 4.0
-# Dodge strength scales with proximity (Shepherd's urgency curve): zero
-# urgency at the presence threshold, full at/below DODGE_MIN_MM, exponent
-# < 1 so the response ramps quickly as soon as something enters range.
-# Applies to phone AVOIDs and the on-board avoidance, re-scaled live while
-# the dodge runs.
-DODGE_MIN_MM = 200.0
-DODGE_URGENCY_EXP = 0.6
-DODGE_MIN_SPEED = 2
 
 ui = WebUI()
 
@@ -99,7 +88,7 @@ _state = {
     "threshold_mm": PRESENCE_MAX_MM,
     "phone_msg": None,   # last freeform text received over the NUS side channel
     "motor": 0,          # commanded wheel direction: -1 left, 0 stop, +1 right
-    "wheel_speed": DASHBOARD_SPEED,  # commanded wheel speed 1..5
+    "wheel_speed": WHEEL_SPEED,  # always full scale
     "motors_ok": False,  # True once the sketch reports the Modulino Motors is detected
     "vibro_ok": False,   # True once the sketch reports the Modulino Vibro is detected
     "motor_ma_a": None,  # sensed current on channel A, mA
@@ -120,8 +109,6 @@ _state = {
 _auto_state = "idle"
 _auto_started = 0.0
 _auto_recover_until = 0.0
-_auto_avoid_speed = DASHBOARD_SPEED  # speed the current/last auto-avoid ran at
-_dodge_active = False  # last wheel command was an obstacle dodge (re-scalable)
 _events = deque(maxlen=EVENT_LOG_LEN)
 _motor_history = deque(maxlen=MOTOR_HISTORY_LEN)
 _presence_streak = 0  # +n consecutive "in" readings, -n "out"; 0 = nothing pending
@@ -255,11 +242,8 @@ def _sock_handle(line: bytes):
     if action not in DIRECTIONS:
         logger.warning(f"ignoring unknown action {action!r}")
         return
-    try:
-        speed = int(message.get("speed", DEFAULT_SPEED))
-    except (TypeError, ValueError):
-        speed = DEFAULT_SPEED
-    _set_wheel(DIRECTIONS[action], max(1, min(5, speed)), "phone")
+    # Speed hints from the daemon are ignored: every spin is full scale.
+    _set_wheel(DIRECTIONS[action], "phone")
 
 
 def _sock_pump(timeout_s: float):
@@ -340,33 +324,11 @@ def _push_actuators():
 _TURN_RE = re.compile(r"TURN\s+(LEFT|RIGHT)\s*(\d+)?")
 
 
-def _speed_for_deg(deg: int) -> int:
-    for min_deg, speed in TURN_SPEED_TABLE:
-        if deg >= min_deg:
-            return speed
-    return TURN_SPEED_TABLE[-1][1]
-
-
-def _dodge_speed() -> int:
-    """Wheel speed tier for an obstacle dodge, scaled by live proximity
-    (Shepherd's urgency curve): gentle lean at the threshold edge, full
-    speed by DODGE_MIN_MM. Full scale when there is no reading to judge by.
-    Takes _lock — never call while already holding it."""
-    with _lock:
-        mm = _state["mm"]
-        threshold = _state["threshold_mm"]
-    if mm is None:
-        return DASHBOARD_SPEED
-    span = max(1.0, threshold - DODGE_MIN_MM)
-    urgency = min(1.0, max(0.0, (threshold - mm) / span)) ** DODGE_URGENCY_EXP
-    return DODGE_MIN_SPEED + round((DASHBOARD_SPEED - DODGE_MIN_SPEED) * urgency)
-
-
 def _steer_from_text(text: str):
-    """Map phone text to (dir, speed, kind), or None for display-only text.
+    """Map phone text to (dir, kind), or None for display-only text.
 
-    "TURN LEFT 90" / "TURN RIGHT 35"  -> ("turn")  speed scaled by the angle
-    "AVOID LEFT" / anything with LEFT -> ("dodge") caller re-scales by proximity
+    "TURN LEFT 90" / "TURN RIGHT 35"  -> ("turn")  route turn, full speed
+    "AVOID LEFT" / anything with LEFT -> ("dodge") obstacle dodge, full speed
     "CLEAR" / "STOP" / "STRAIGHT"     -> ("stop")  stop the wheel
     """
     t = text.upper()
@@ -374,26 +336,22 @@ def _steer_from_text(text: str):
     if m:
         deg = int(m.group(2)) if m.group(2) else 45
         direction = -1 if m.group(1) == "LEFT" else 1
-        return direction, _speed_for_deg(deg), "turn"
+        return direction, "turn"
     if "LEFT" in t:
-        return -1, DASHBOARD_SPEED, "dodge"
+        return -1, "dodge"
     if "RIGHT" in t:
-        return 1, DASHBOARD_SPEED, "dodge"
+        return 1, "dodge"
     if any(word in t for word in ("CLEAR", "STOP", "CENTER", "STRAIGHT")):
-        return 0, DASHBOARD_SPEED, "stop"
+        return 0, "stop"
     return None
 
 
-def _set_wheel(direction: int, speed: int, reason: str, dodge: bool = False):
-    global _auto_state, _dodge_active
+def _set_wheel(direction: int, reason: str):
+    global _auto_state
     with _lock:
-        changed = (_state["motor"] != direction
-                   or _state["wheel_speed"] != speed)
+        changed = _state["motor"] != direction
         _state["motor"] = direction
-        _state["wheel_speed"] = speed
-        # Track whether the current command is an obstacle dodge, so the
-        # watchdog can re-scale its speed as the obstacle closes or recedes.
-        _dodge_active = dodge
+        _state["wheel_speed"] = WHEEL_SPEED
         # Any phone/dashboard command takes over from the on-board avoidance.
         if not reason.startswith("auto") and _auto_state != "idle":
             _auto_state = "idle"
@@ -401,18 +359,15 @@ def _set_wheel(direction: int, speed: int, reason: str, dodge: bool = False):
     if changed:
         _push_actuators()
         word = ACTION_NAMES.get(direction, "stop")
-        _log_event(f"Wheel -> {word} speed {speed} ({reason})")
+        _log_event(f"Wheel -> {word} ({reason})")
 
 
 def _auto_on_presence(present: bool):
     """Deterministic on-board avoidance state machine. Runs only while no
     phone is connected over BLE; every transition goes through _set_wheel
     with an "auto…" reason, so any real command cancels it instantly."""
-    global _auto_state, _auto_started, _auto_recover_until, _auto_avoid_speed
+    global _auto_state, _auto_started, _auto_recover_until
     now = time.monotonic()
-    # Proximity-scaled dodge tier; computed up front because _dodge_speed
-    # takes _lock itself (never nest the non-reentrant lock).
-    dodge_speed = _dodge_speed() if present else 0
     action = None
     with _lock:
         if present:
@@ -420,12 +375,10 @@ def _auto_on_presence(present: bool):
                     and _auto_state != "avoiding"):
                 _auto_state = "avoiding"
                 _auto_started = now
-                _auto_avoid_speed = dodge_speed
                 _state["auto_steer"] = "avoiding"
-                action = (AUTO_AVOID_DIR, dodge_speed,
+                action = (AUTO_AVOID_DIR,
                           "auto-avoid: obstacle ahead, dodging "
-                          + ("right" if AUTO_AVOID_DIR > 0 else "left"),
-                          True)
+                          + ("right" if AUTO_AVOID_DIR > 0 else "left"))
         elif _auto_state == "avoiding":
             duration = now - _auto_started
             recover = max(AUTO_RECOVER_MIN_S,
@@ -434,13 +387,10 @@ def _auto_on_presence(present: bool):
             _auto_state = "recovering"
             _auto_recover_until = now + recover
             _state["auto_steer"] = "recovering"
-            # Counter-turn at the speed the avoid phase last ran at, so the
-            # return leg mirrors the outbound one.
-            action = (-AUTO_AVOID_DIR, _auto_avoid_speed,
-                      f"auto-recover: {recover:.1f}s counter-turn back to line",
-                      False)
+            action = (-AUTO_AVOID_DIR,
+                      f"auto-recover: {recover:.1f}s counter-turn back to line")
     if action:
-        _set_wheel(action[0], action[1], action[2], dodge=action[3])
+        _set_wheel(action[0], action[1])
 
 
 def _auto_tick(now: float):
@@ -453,7 +403,7 @@ def _auto_tick(now: float):
             _state["auto_steer"] = "idle"
             done = True
     if done:
-        _set_wheel(0, DASHBOARD_SPEED, "auto-recover complete, back on line")
+        _set_wheel(0, "auto-recover complete, back on line")
 
 
 # ---- Bridge handlers (sketch -> app) ----------------------------------------
@@ -619,22 +569,6 @@ def watchdog():
         present_now = _state["present"]
     _auto_on_presence(present_now)
     _auto_tick(now)
-    # Shepherd-style urgency: while a dodge is running (on-board avoidance or
-    # a phone AVOID), re-scale the wheel speed as the obstacle closes in or
-    # backs away. _set_wheel's change-check keeps stable tiers silent.
-    with _lock:
-        auto_dodging = _auto_state == "avoiding"
-        dodging = auto_dodging or _dodge_active
-        dodge_dir = _state["motor"]
-        dodge_speed_now = _state["wheel_speed"]
-        dodge_mm = _state["mm"]
-    if dodging and present_now and dodge_dir != 0:
-        tier = _dodge_speed()
-        if tier != dodge_speed_now:
-            mm_txt = f"{dodge_mm:.0f} mm" if dodge_mm is not None else "no reading"
-            reason = (f"auto-dodge urgency update ({mm_txt})" if auto_dodging
-                      else f"dodge urgency update ({mm_txt})")
-            _set_wheel(dodge_dir, tier, reason, dodge=True)
     _push_actuators()
     _emit(force=True)
 
@@ -661,7 +595,7 @@ def set_threshold(payload: dict):
 def set_phone_msg(payload: dict):
     """POST /api/phone {"text": "..."} — freeform text from the NUS side
     channel. Steering keywords (left/right/clear/stop) also drive the wheel;
-    dodges are re-scaled by live proximity. Anything else is display-only."""
+    every spin runs at full speed. Anything else is display-only."""
     text = str(payload.get("text", "")).strip()[:200]
     with _lock:
         _state["phone_msg"] = text or None
@@ -669,11 +603,8 @@ def set_phone_msg(payload: dict):
         _log_event(f"Phone (NUS): {text!r}")
         command = _steer_from_text(text)
         if command is not None:
-            direction, speed, kind = command
-            if kind == "dodge":
-                speed = _dodge_speed()
-            _set_wheel(direction, speed, f"NUS text {text!r}",
-                       dodge=(kind == "dodge"))
+            direction, _kind = command
+            _set_wheel(direction, f"NUS text {text!r}")
     _emit(force=True)
     return {"ok": True}
 
@@ -686,7 +617,7 @@ def set_motor_api(payload: dict):
         return {"error": 'expected {"dir": -1|0|1}'}
     if direction not in (-1, 0, 1):
         return {"error": 'expected {"dir": -1|0|1}'}
-    _set_wheel(direction, DASHBOARD_SPEED, "dashboard")
+    _set_wheel(direction, "dashboard")
     return {"motor": direction}
 
 
@@ -734,6 +665,7 @@ def set_bt(payload: dict):
         _log_event(f"Phone connected over BLE (NUS){': ' + device if device else ''}")
     if was_connected and not now_connected:
         _log_event("Phone disconnected from BLE (NUS)")
+        _set_wheel(0, "phone disconnected")
     _emit(force=True)
     return {"ok": True}
 
