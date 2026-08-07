@@ -1,9 +1,10 @@
 [Unit]
 Description=BlueZ pairing agent: auto-accept pairing on the headless board
+StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/bin/python3 /home/arduino/dev/qhackcane/ble-bridge/bt_agent.py
-Restart=on-failure
+ExecStart=/usr/bin/python3 /home/arduino/dev/qualcomm-hackathon/board/ble-bridge/bt_agent.py
+Restart=always
 RestartSec=3
 
 [Install]
