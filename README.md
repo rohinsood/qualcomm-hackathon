@@ -470,8 +470,13 @@ absence removes a feature; neither blocks you.
 ```bash
 git clone https://github.com/<your-account>/lighthouse.git
 cd lighthouse
-git checkout v3          # main is docs + hardware; code is on v3
+git checkout v3          # the full perception system this section describes
 ```
+
+`main` now also carries a merged demo app — the qhackGPS navigator with v3's
+screen-thirds camera scan folded in as a toggle (see
+[`docs/SCAN.md`](docs/SCAN.md) and [`docs/BRANCHES.md`](docs/BRANCHES.md)).
+The steps below describe `v3`.
 
 **2 — Configure keys**
 
@@ -550,11 +555,14 @@ Field-test protocol: [`Hardware/Assembly Instructions.md`](Hardware/Assembly%20I
 
 ## Repository layout
 
-`main` is the documentation and hardware hub. Application code lives on branches.
+`main` carries the docs, the hardware, and — since the merge — the qhackGPS
+demo app plus the cane firmware (`app/`, `board/`, `arduino/`). The full
+perception system stays on `v3`.
 
 | Branch | Contents |
 |---|---|
-| **`v3`** | The system — Android app (`app/`) + cane board (`board/qcane-wheel/`). **Start here.** |
+| **`v3`** | The perception system — Android app (`app/`) + cane board (`board/qcane-wheel/`). **Start here for the full stack.** |
+| **`qhackfinal`** | What `main` was merged from: the qhackGPS navigator + `board/distance-watch` firmware. |
 | **`qhackgps`** | Standalone compass-navigation app; routing prototype over Bluetooth Classic SPP. Independent, still runnable. |
 | `v2`, `arduinov1`, `shepherd-snapdragon`, `fastscnn-depthanything` | Development history, retained for provenance. |
 
@@ -563,6 +571,9 @@ main
 ├── README.md                     this file
 ├── LICENSE                       AGPL-3.0
 ├── NOTICE.md                     third-party components + licensing rationale
+├── app/                          merged demo app (qhackGPS + camera scan)
+├── arduino/                      HC-05 SPP guidance-motor sketch
+├── board/                        cane board: distance-watch app + BLE bridge
 ├── Hardware/
 │   ├── Bill of Materials.md      full parts list with costs
 │   ├── Assembly Instructions.md  bench bring-up → print → assemble
@@ -572,6 +583,7 @@ main
     ├── MODELS.md                 every model: license, fetch command, push target
     ├── BOARD.md                  board internals + both BLE transports
     ├── SETUP.md                  from-scratch setup + troubleshooting
+    ├── SCAN.md                   the camera obstacle scan in the merged app
     ├── PERFORMANCE.md            measured numbers and how to reproduce them
     ├── BRANCHES.md               what lives where
     └── KNOWN_ISSUES.md           audited defects, stated plainly
@@ -724,8 +736,10 @@ decision jitter as angle spread across a burst.
 **AGPL-3.0** — see [`LICENSE`](LICENSE).
 
 Set by the bundled YOLOv8n detector, which Ultralytics licenses AGPL-3.0. That
-detector is the only AGPL component and is **not on the steering path** — it
-supplies object labels at 1 Hz and calibrates depth scale. Removing it and
+detector is the only AGPL component. On `v3` it is **not on the steering path** —
+it supplies object labels at 1 Hz and calibrates depth scale. (In the merged
+`main` app, the optional camera scan does steer from its detections while the
+SCAN toggle is on.) Removing it and
 substituting a permissively-licensed detector would allow relicensing the
 remainder under Apache-2.0. Full reasoning and component inventory:
 [`NOTICE.md`](NOTICE.md).

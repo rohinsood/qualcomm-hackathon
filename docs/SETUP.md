@@ -22,8 +22,13 @@ features, neither blocks the build.
 ```bash
 git clone https://github.com/<your-account>/lighthouse.git
 cd lighthouse
-git checkout v3          # main is docs + hardware only; the code is here
+git checkout v3          # the full perception system this guide describes
 ```
+
+This guide sets up **`v3`** (`dev.quad.shepherd`, `board/qcane-wheel/`).
+`main` carries the merged demo system instead — the qhackGPS app with the
+camera scan, plus the `board/distance-watch/` firmware; for that, stay on
+`main` and see [`SCAN.md`](SCAN.md) and [`BRANCHES.md`](BRANCHES.md).
 
 ## 2 — Android SDK
 
