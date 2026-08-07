@@ -10,7 +10,9 @@ import java.util.Locale
  * Voice guidance front-end: the Android system TTS with two registers
  * (normal / urgent), a same-text guard so repeated state cannot stammer,
  * and interrupt semantics for safety lines ("Stop. Obstacle ahead") that
- * must not wait in the queue behind routine turn prompts.
+ * must not wait in the queue behind routine turn prompts. Companion chat
+ * sentences go through [announceChat] — queued, no dedup guard, so a
+ * streamed reply is spoken in order and repeated phrasings survive.
  *
  * Trimmed from the Shepherd app's SpeechFeedback (v3 branch) — same
  * announce contract, without the neural-voice stack.
@@ -61,6 +63,19 @@ class SpeechFeedback(context: Context) {
         tts.setSpeechRate(if (urgent) URGENT_RATE else NORMAL_RATE)
         val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         tts.speak(text, mode, null, "qg-${counter++}")
+    }
+
+    /** Companion chat sentence: queued behind whatever is speaking, no dedup guard. */
+    fun announceChat(text: String) {
+        if (!ready) return
+        tts.setSpeechRate(NORMAL_RATE)
+        tts.speak(text, TextToSpeech.QUEUE_ADD, null, "chat-${counter++}")
+    }
+
+    /** Hard stop everything — the companion goes quiet to listen. */
+    fun stopAll() {
+        lastText = null
+        if (ready) runCatching { tts.stop() }
     }
 
     fun shutdown() {

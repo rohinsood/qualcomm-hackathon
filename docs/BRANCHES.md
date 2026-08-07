@@ -23,6 +23,7 @@ git checkout v3
 app/                            Android app  (Kotlin, package com.example.qhackgps — "qhackGPS")
 board/distance-watch/           Cane board app  (Arduino UNO Q: sketch + Python + web dashboard + QCane host daemon)
 board/ble-bridge/               Nordic UART bridge the phone talks to  (advertises "Distance Watch")
+board/depth-spike/              On-board depth bench + live MJPEG viewer  (the experiment behind PERFORMANCE.md)
 arduino/qhack_guidance_motor/   Older HC-05 SPP demo sketch, fed by the `QG,…` wire lines
 Hardware/                       CAD, BOM, assembly
 docs/                           this documentation
@@ -31,7 +32,10 @@ docs/                           this documentation
 The app is a landscape map HUD: Google walking routes or straight-line
 compass mode, alignment guidance with hysteresis and a persisted
 heading-trim calibration, system-TTS voice on transitions, and phone-buzz
-haptics while the cane reports an obstacle. The **phone is the only
+haptics while the cane reports an obstacle. A push-to-talk companion —
+v3's Qwen SLM on the Hexagon NPU — answers questions grounded in what the
+camera scan sees, reads signs on request, and takes spoken navigation
+commands ("take me to…"). The **phone is the only
 steering authority** — the board senses (ToF distance) and actuates (wheel,
 vibro), but every turn is the phone's call, sent as `AVOID LEFT`/`AVOID
 RIGHT` (full-speed dodge), `TURN LEFT|RIGHT <deg>` (route turn), or
@@ -41,10 +45,12 @@ that same vocabulary; its precedence table is in [`SCAN.md`](SCAN.md).
 
 The port from `v3` was **selective**: the thirds decision logic, the YOLO
 detector plumbing, and the QNN session tiering came over
-(`app/src/main/java/com/example/qhackgps/scan/`); the v3 app itself —
-package `dev.quad.shepherd`, with the segmentation ensemble, metric depth,
-the BEV planner, the SLM, and the neural voice — was **not** merged and
-remains complete on its branch.
+(`app/src/main/java/com/example/qhackgps/scan/`), followed by the
+companion SLM with its push-to-talk voice loop and OCR (`…/llm/`,
+`…/speech/`) and the board depth spike. The v3 app itself — package
+`dev.quad.shepherd`, with the segmentation ensemble, metric depth, the
+BEV planner, and the neural voice — was **not** merged and remains
+complete on its branch.
 
 ## `v3` — the full perception system
 
@@ -62,9 +68,9 @@ scripts/                 Model export + fetch
 Everything in [`ARCHITECTURE.md`](ARCHITECTURE.md), [`MODELS.md`](MODELS.md),
 [`BOARD.md`](BOARD.md), and the measured numbers in
 [`PERFORMANCE.md`](PERFORMANCE.md) describes **this branch** — not the app
-on `main`. What `main` took from here is deliberately small: the
-screen-thirds decision logic and the detector pipeline under it
-([`SCAN.md`](SCAN.md)).
+on `main`. What `main` took from here: the screen-thirds decision logic
+and the detector pipeline under it ([`SCAN.md`](SCAN.md)), the companion
+SLM with its voice loop, and `board/depth-spike/`.
 
 Two directories are worth knowing about even though they don't ship:
 

@@ -571,9 +571,9 @@ main
 ├── README.md                     this file
 ├── LICENSE                       AGPL-3.0
 ├── NOTICE.md                     third-party components + licensing rationale
-├── app/                          merged demo app (qhackGPS + camera scan)
+├── app/                          merged demo app (qhackGPS + camera scan + voice companion)
 ├── arduino/                      HC-05 SPP guidance-motor sketch
-├── board/                        cane board: distance-watch app + BLE bridge
+├── board/                        cane board: distance-watch app + BLE bridge + depth spike
 ├── Hardware/
 │   ├── Bill of Materials.md      full parts list with costs
 │   ├── Assembly Instructions.md  bench bring-up → print → assemble

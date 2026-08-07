@@ -145,6 +145,132 @@ suspend fun fetchWalkingRoute(origin: LatLng, dest: LatLng, apiKey: String): Lis
 
 private const val ROUTE_TAG = "qhackGPS.route"
 
+/** A spoken destination resolved to a map point, with a speakable name. */
+data class ResolvedPlace(val latLng: LatLng, val label: String)
+
+/**
+ * Spoken destination text -> place, ported from v3's RoutesClient.
+ * Geocoding first (addresses, landmarks), biased to a box around the
+ * walker; zero results fall back to Places Text Search so spoken business
+ * names ("the pharmacy", "Joe's cafe") resolve to the nearest match.
+ * Returns null on any failure so the caller can say so out loud.
+ */
+suspend fun resolveDestination(text: String, near: LatLng, apiKey: String): ResolvedPlace? {
+    if (apiKey.isBlank()) {
+        Log.w(ROUTE_TAG, "No Maps key — spoken destinations need MAPS_API_KEY.")
+        return null
+    }
+    return withContext(Dispatchers.IO) {
+        try {
+            val bias = "&bounds=${near.latitude - 0.35},${near.longitude - 0.35}%7C" +
+                "${near.latitude + 0.35},${near.longitude + 0.35}"
+            val url = "https://maps.googleapis.com/maps/api/geocode/json?address=" +
+                java.net.URLEncoder.encode(text, "UTF-8") + bias + "&key=" + apiKey
+            val body = httpGet(url)
+            if (body != null) {
+                val results = JSONObject(body).getJSONArray("results")
+                if (results.length() > 0) {
+                    val first = results.getJSONObject(0)
+                    val loc = first.getJSONObject("geometry").getJSONObject("location")
+                    return@withContext ResolvedPlace(
+                        latLng = LatLng(loc.getDouble("lat"), loc.getDouble("lng")),
+                        label = first.optString("formatted_address", text).substringBefore(','),
+                    )
+                }
+            }
+            Log.w(ROUTE_TAG, "geocode: zero results for \"$text\", trying Places")
+            placesSearch(text, near, apiKey)
+        } catch (e: Exception) {
+            Log.w(ROUTE_TAG, "geocode failed", e)
+            placesSearch(text, near, apiKey)
+        }
+    }
+}
+
+/** Places Text Search (New), biased to a 3 km circle around the walker. */
+private fun placesSearch(text: String, near: LatLng, apiKey: String): ResolvedPlace? = try {
+    val request = JSONObject()
+        .put("textQuery", text)
+        .put("pageSize", 1)
+        .put(
+            "locationBias",
+            JSONObject().put(
+                "circle",
+                JSONObject()
+                    .put(
+                        "center",
+                        JSONObject()
+                            .put("latitude", near.latitude)
+                            .put("longitude", near.longitude),
+                    )
+                    .put("radius", 3000.0),
+            ),
+        )
+    val body = httpPost(
+        "https://places.googleapis.com/v1/places:searchText",
+        request.toString(),
+        apiKey = apiKey,
+        fieldMask = "places.displayName,places.location",
+    )
+    val places = body?.let { JSONObject(it).optJSONArray("places") }
+    if (places == null || places.length() == 0) {
+        Log.w(ROUTE_TAG, "places: zero results for \"$text\"")
+        null
+    } else {
+        val place = places.getJSONObject(0)
+        val loc = place.getJSONObject("location")
+        ResolvedPlace(
+            latLng = LatLng(loc.getDouble("latitude"), loc.getDouble("longitude")),
+            label = place.optJSONObject("displayName")?.optString("text") ?: text,
+        )
+    }
+} catch (e: Exception) {
+    Log.w(ROUTE_TAG, "places search failed", e)
+    null
+}
+
+private fun httpGet(url: String): String? = try {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 8000
+        readTimeout = 8000
+    }
+    val code = connection.responseCode
+    val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+        ?.bufferedReader()?.use { it.readText() }
+    connection.disconnect()
+    if (code in 200..299) body else {
+        Log.w(ROUTE_TAG, "GET $code: ${body?.take(200)}")
+        null
+    }
+} catch (e: Exception) {
+    Log.w(ROUTE_TAG, "GET failed", e)
+    null
+}
+
+private fun httpPost(url: String, json: String, apiKey: String, fieldMask: String): String? = try {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 8000
+        readTimeout = 8000
+        requestMethod = "POST"
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+        setRequestProperty("X-Goog-Api-Key", apiKey)
+        setRequestProperty("X-Goog-FieldMask", fieldMask)
+    }
+    connection.outputStream.use { it.write(json.toByteArray()) }
+    val code = connection.responseCode
+    val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+        ?.bufferedReader()?.use { it.readText() }
+    connection.disconnect()
+    if (code in 200..299) body else {
+        Log.w(ROUTE_TAG, "POST $code: ${body?.take(200)}")
+        null
+    }
+} catch (e: Exception) {
+    Log.w(ROUTE_TAG, "POST failed", e)
+    null
+}
+
 /** Standard Google encoded-polyline decoder. */
 fun decodePolyline(encoded: String): List<LatLng> {
     val poly = ArrayList<LatLng>()

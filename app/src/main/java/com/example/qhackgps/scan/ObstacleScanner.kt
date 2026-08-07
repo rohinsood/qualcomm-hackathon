@@ -14,6 +14,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.example.qhackgps.llm.SceneBlackboard
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,6 +72,15 @@ class ObstacleScanner(private val context: Context) : ImageAnalysis.Analyzer {
     private val _decision = MutableStateFlow(ThirdsGuidance.Decision.STRAIGHT)
     val decision: StateFlow<ThirdsGuidance.Decision> = _decision.asStateFlow()
 
+    /** The most recent upright camera frame, for OCR; null while off. */
+    @Volatile var latestFrame: Bitmap? = null
+        private set
+
+    /** Optional scene sink for the voice companion: fed the frame's
+     *  detections and a severity mirroring the thirds decision, and
+     *  cleared on [stop] so the companion never reasons from stale frames. */
+    @Volatile var blackboard: SceneBlackboard? = null
+
     // Preprocessing scratch, touched only on the analysis thread.
     private val size = DetectionEngine.INPUT_SIZE
     private val inputBuffer: FloatBuffer = FloatBuffer.allocate(3 * size * size)
@@ -110,6 +120,9 @@ class ObstacleScanner(private val context: Context) : ImageAnalysis.Analyzer {
         analysisExecutor.execute { thirds.reset() }
         _decision.value = ThirdsGuidance.Decision.STRAIGHT
         _state.value = ScanState.Off
+        latestFrame = null
+        blackboard?.updateFrame(emptyList(), 0)
+        blackboard?.updateGuidance(SceneBlackboard.Severity.CLEAR, null, null)
     }
 
     /** Final teardown; the scanner is unusable afterwards. */
@@ -177,25 +190,48 @@ class ObstacleScanner(private val context: Context) : ImageAnalysis.Analyzer {
         // Model-space boxes -> camera-frame space, with pinhole distances
         // (closeness corrections use model-space geometry, as in v3).
         val sizeF = size.toFloat()
-        val obstacles = modelSpace.map { d ->
+        val frameDetections = modelSpace.map { d ->
             val dist = DistanceEstimator.applyCloseness(
                 estimate = DistanceEstimator.estimate(d.label, d.height),
                 areaFraction = (d.width * d.height) / (sizeF * sizeF),
                 touchesTop = d.y1 < 6f,
                 touchesBottom = d.y2 > sizeF - 6f,
             )
-            ThirdsGuidance.obstacle(
+            d.copy(
                 x1 = ((d.x1 - padX) / scale).coerceIn(0f, upright.width.toFloat()),
-                x2 = ((d.x2 - padX) / scale).coerceIn(0f, upright.width.toFloat()),
                 y1 = ((d.y1 - padY) / scale).coerceIn(0f, upright.height.toFloat()),
+                x2 = ((d.x2 - padX) / scale).coerceIn(0f, upright.width.toFloat()),
                 y2 = ((d.y2 - padY) / scale).coerceIn(0f, upright.height.toFloat()),
-                frameWidth = upright.width,
-                frameHeight = upright.height,
                 distanceMeters = dist,
             )
         }
+        val obstacles = frameDetections.map { d ->
+            ThirdsGuidance.obstacle(
+                d.x1, d.x2, d.y1, d.y2,
+                upright.width, upright.height, d.distanceMeters,
+            )
+        }
 
-        _decision.value = thirds.update(obstacles, segClearance = null)
+        val decision = thirds.update(obstacles, segClearance = null)
+        _decision.value = decision
+        latestFrame = upright
+
+        blackboard?.let { bb ->
+            bb.updateFrame(frameDetections, upright.width)
+            val nearest = frameDetections
+                .filter { it.distanceMeters != null }
+                .minByOrNull { it.distanceMeters!! }
+            bb.updateGuidance(
+                severity = when (decision) {
+                    ThirdsGuidance.Decision.STRAIGHT -> SceneBlackboard.Severity.CLEAR
+                    ThirdsGuidance.Decision.LEFT,
+                    ThirdsGuidance.Decision.RIGHT -> SceneBlackboard.Severity.CAUTION
+                    ThirdsGuidance.Decision.STOP -> SceneBlackboard.Severity.DANGER
+                },
+                nearestLabel = nearest?.label,
+                nearestDistance = nearest?.distanceMeters,
+            )
+        }
     }
 
     /** ARGB bitmap -> CHW float tensor, RGB in 0..1. */

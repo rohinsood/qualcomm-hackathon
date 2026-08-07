@@ -145,8 +145,10 @@ stack). A 2 s same-text guard stops identical lines from stammering.
 ## 4. What stayed on v3 — and what that costs
 
 Deliberately not ported: the segmentation ensemble, the metric depth model,
-the BEV traversability grid and polar planner, the SLM, and the neural TTS.
-Consequences:
+the BEV traversability grid and polar planner, and the neural TTS. (The
+companion SLM and its voice loop, first left behind, were ported in a
+follow-up — grounded in this scan's detections through the scene
+blackboard.) Consequences:
 
 - `ThirdsGuidance` runs its **seg-less fallback**: callers pass
   `segClearance = null`, sides start from `UNKNOWN_SIDE_SCORE`, and the middle

@@ -28,11 +28,18 @@
     <!-- Camera obstacle scan (the SCAN toggle): on-device YOLO detection. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Push-to-talk companion. Recognition runs on-device (API 31+
+         on-device recognizer); audio never leaves the phone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <uses-feature
         android:name="android.hardware.sensor.compass"
         android:required="false" />
     <uses-feature
         android:name="android.hardware.camera.any"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.microphone"
         android:required="false" />
 
     <application

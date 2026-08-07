@@ -54,9 +54,23 @@ android {
     packaging {
         jniLibs {
             // The QNN HTP (NPU) backend opens libQnnHtpV*Skel.so by file
-            // path, so the native libs must be extracted to disk rather
-            // than left compressed inside the APK.
+            // path, and GenieX dlopens its plugins by absolute path — both
+            // need the native libs extracted to disk rather than left
+            // compressed inside the APK.
             useLegacyPackaging = true
+            // GenieX, its qnn-runtime dep, and onnxruntime-android-qnn all
+            // ship libQnn*.so. Keep one copy — declaration order makes
+            // GenieX's newer QNN win, which ORT then loads as well.
+            pickFirsts += setOf(
+                "lib/arm64-v8a/libQnn*.so",
+                "lib/arm64-v8a/libc++_shared.so",
+            )
+        }
+        resources {
+            excludes += "META-INF/DEPENDENCIES"
+            excludes += "META-INF/LICENSE*"
+            excludes += "META-INF/NOTICE*"
+            excludes += "META-INF/INDEX.LIST"
         }
     }
 }
@@ -78,7 +92,15 @@ dependencies {
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
+    // GenieX: Qualcomm's on-device GenAI runtime (the companion SLM on the
+    // Hexagon NPU). Ships QNN native libs; declared BEFORE onnxruntime so
+    // its newer QNN wins the jniLibs merge (see packaging.pickFirsts).
+    implementation(libs.geniex.android)
     implementation(libs.onnxruntime.android.qnn)
+    // On-demand sign/menu reading — bundled Latin model, fully offline —
+    // plus the Task.await() bridge ML Kit's API needs.
+    implementation(libs.mlkit.text.recognition)
+    implementation(libs.kotlinx.coroutines.play.services)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

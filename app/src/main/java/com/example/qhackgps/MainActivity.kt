@@ -25,6 +25,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -96,9 +98,12 @@ import com.example.qhackgps.guidance.GuidanceBus
 import com.example.qhackgps.guidance.GuidanceUpdate
 import com.example.qhackgps.guidance.TurnDirection
 import com.example.qhackgps.haptics.ObstacleHaptics
+import com.example.qhackgps.llm.SceneBlackboard
+import com.example.qhackgps.llm.VoiceCompanion
 import com.example.qhackgps.scan.ObstacleScanner
 import com.example.qhackgps.scan.ScanState
 import com.example.qhackgps.scan.ThirdsGuidance
+import com.example.qhackgps.speech.VoiceInput
 import com.example.qhackgps.ui.theme.HudAlertSurface
 import com.example.qhackgps.ui.theme.HudBlue
 import com.example.qhackgps.ui.theme.HudGreen
@@ -142,6 +147,9 @@ private const val AVOID_TURN_DEG = 45
 
 /** A standing camera-scan STOP is re-spoken this often (v3 policy). */
 private const val SCAN_STOP_REPEAT_MS = 4000L
+
+/** Talk button lifecycle: idle -> held and listening -> answering. */
+private enum class TalkState { IDLE, LISTENING, THINKING }
 
 /**
  * Below this speed a GPS bearing is mostly noise, so it can't be used as the
@@ -469,6 +477,89 @@ fun NavigatorScreen() {
         onDispose { speech.shutdown() }
     }
 
+    // ---------- Voice companion (v3 SLM + push-to-talk, on the NPU) ----------
+    // The scene blackboard grounds every companion turn in what the camera
+    // scan currently sees; the scanner feeds it while the SCAN toggle is on.
+    // Vision runs GPU-first (scan/OrtSessions), so the SLM has the Hexagon
+    // to itself — the accelerator split v3 designed for, with nothing parked.
+    val blackboard = remember { SceneBlackboard() }
+    SideEffect { scanner.blackboard = blackboard }
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasMicPermission = granted
+        if (!granted) speech.announce("I need microphone permission to listen.")
+    }
+    val companion = remember {
+        VoiceCompanion(
+            context.applicationContext,
+            blackboard,
+            speech,
+            latestFrame = { scanner.latestFrame },
+            listener = object : VoiceCompanion.Listener {
+                override fun currentLocation(): LatLng? =
+                    currentLocation?.let { LatLng(it.latitude, it.longitude) }
+
+                override fun onSetDestination(place: ResolvedPlace) {
+                    destination = place.latLng
+                }
+
+                override fun onClearDestination() {
+                    destination = null
+                }
+
+                override fun onSetRoadRouting(enabled: Boolean) {
+                    roadRouting = enabled
+                    NavSettings.setRoadRouting(context, enabled)
+                }
+            },
+        )
+    }
+    var talkState by remember { mutableStateOf(TalkState.IDLE) }
+    val voice = remember {
+        VoiceInput(
+            context,
+            onTranscript = { text ->
+                talkState = TalkState.THINKING
+                scope.launch {
+                    try {
+                        companion.ask(text)
+                    } finally {
+                        talkState = TalkState.IDLE
+                    }
+                }
+            },
+            onNoSpeech = {
+                talkState = TalkState.IDLE
+                speech.announce("Didn't catch that.")
+            },
+            onError = { msg ->
+                talkState = TalkState.IDLE
+                speech.announce(msg)
+            },
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            voice.destroy()
+            companion.close()
+        }
+    }
+    // Load the SLM at startup only when its model is ALREADY on the phone —
+    // the ~1.2 GB download is never started silently; the first talk request
+    // announces it instead. Also make sure the offline speech-recognition
+    // pack is installed before push-to-talk needs it.
+    LaunchedEffect(Unit) {
+        voice.ensureModel()
+        companion.warmIfModelPresent()
+    }
+
     // Spoken guidance from the same bus every exporter reads. Obstacles outrank
     // and interrupt everything; turns and arrival queue behind them, bucketed
     // and rate-limited so compass drift cannot stammer.
@@ -495,8 +586,9 @@ fun NavigatorScreen() {
                         TurnDirection.RIGHT -> " Turning right."
                         else -> ""
                     }
-                    speech.announce("Stop. Obstacle ahead$meters.$dodge",
-                        interrupt = true, urgent = true)
+                    val alert = "Stop. Obstacle ahead$meters.$dodge".trim()
+                    speech.announce(alert, interrupt = true, urgent = true)
+                    blackboard.noteAlert(alert, now)
                 } else {
                     speech.announce("Path clear.")
                     // Force the next route direction to be spoken, so the user
@@ -588,6 +680,9 @@ fun NavigatorScreen() {
                     interrupt = true,
                     urgent = d == ThirdsGuidance.Decision.STOP,
                 )
+                if (d == ThirdsGuidance.Decision.STOP) {
+                    blackboard.noteAlert("camera: blocked ahead, told the user to stop", now)
+                }
             }
             delay(150L)
         }
@@ -643,7 +738,14 @@ fun NavigatorScreen() {
         obstaclePresent = obstaclePresent,
         obstacleMm = caneReading?.mm ?: -1,
     )
-    SideEffect { GuidanceBus.publish(guidanceUpdate) }
+    SideEffect {
+        GuidanceBus.publish(guidanceUpdate)
+        // Ground the companion in navigation progress ("are we there yet").
+        blackboard.navSummary = if (dest != null && distanceToDest != null) {
+            "Navigating: ${formatDistance(distanceToDest)} to the destination" +
+                if (roadRoute != null) ", following the walking route" else ", straight-line bearing"
+        } else null
+    }
 
     // Stream steering to the cane so its wheel physically follows the path:
     // obstacle dodges as AVOID LEFT/RIGHT, route turns as TURN LEFT/RIGHT
@@ -984,6 +1086,66 @@ fun NavigatorScreen() {
             ) {
                 Text(
                     text = "SCAN",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
+            // ----- Push-to-talk companion -----
+            // Hold to speak, release to finalize — v3's talk button. The
+            // FAB's own onClick is a no-op; the press gesture carries the
+            // interaction so the hold duration maps to the utterance.
+            SmallFloatingActionButton(
+                onClick = { },
+                modifier = Modifier
+                    .semantics {
+                        contentDescription = when (talkState) {
+                            TalkState.IDLE -> "Hold to talk to the companion."
+                            TalkState.LISTENING -> "Listening. Release to finish."
+                            TalkState.THINKING -> "Answering."
+                        }
+                    }
+                    .pointerInput(hasMicPermission) {
+                        detectTapGestures(
+                            onPress = {
+                                if (!hasMicPermission) {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                } else if (talkState != TalkState.THINKING) {
+                                    // The friend goes quiet to listen: stop any
+                                    // reply mid-sentence, then start capturing.
+                                    companion.onPttDown()
+                                    talkState = TalkState.LISTENING
+                                    voice.start()
+                                    tryAwaitRelease()
+                                    if (voice.listening) {
+                                        talkState = TalkState.THINKING
+                                        voice.stop()
+                                    } else if (talkState == TalkState.LISTENING) {
+                                        // The recognizer already returned or errored;
+                                        // its callbacks own the state from here.
+                                        talkState = TalkState.IDLE
+                                    }
+                                }
+                            },
+                        )
+                    },
+                containerColor = when (talkState) {
+                    TalkState.LISTENING -> HudRed
+                    TalkState.THINKING -> HudOrange
+                    TalkState.IDLE -> FloatingActionButtonDefaults.containerColor
+                },
+                contentColor = when (talkState) {
+                    TalkState.IDLE -> MaterialTheme.colorScheme.onPrimaryContainer
+                    else -> Color.White
+                },
+            ) {
+                Text(
+                    text = when (talkState) {
+                        TalkState.IDLE -> "TALK"
+                        TalkState.LISTENING -> "REC"
+                        TalkState.THINKING -> "…"
+                    },
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,
                 )
