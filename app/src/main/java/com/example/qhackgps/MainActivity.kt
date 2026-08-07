@@ -15,6 +15,7 @@ import android.location.Location
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -90,6 +91,7 @@ import com.example.qhackgps.bt.BluetoothGuidanceLink
 import com.example.qhackgps.bt.BtLinkState
 import com.example.qhackgps.bt.CaneBleLink
 import com.example.qhackgps.bt.CaneLinkState
+import com.example.qhackgps.feedback.SpeechFeedback
 import com.example.qhackgps.guidance.GuidanceBus
 import com.example.qhackgps.guidance.GuidanceUpdate
 import com.example.qhackgps.guidance.TurnDirection
@@ -393,6 +395,86 @@ fun NavigatorScreen() {
     }
     LaunchedEffect(obstaclePresent, appVisible) {
         if (obstaclePresent && appVisible) haptics.startStopAlert() else haptics.stop()
+    }
+
+    // ---------- Voice guidance (TTS): what to do + what's happening ----------
+    val speech = remember { SpeechFeedback(context.applicationContext) }
+    DisposableEffect(Unit) {
+        onDispose { speech.shutdown() }
+    }
+
+    // Spoken guidance from the same bus every exporter reads. Obstacles outrank
+    // and interrupt everything; turns and arrival queue behind them, bucketed
+    // and rate-limited so compass drift cannot stammer.
+    LaunchedEffect(Unit) {
+        var lastObstacle = false
+        var lastSpokenDir = TurnDirection.NONE
+        var lastSpokenBucket = -1
+        var lastTurnSpokenAt = 0L
+        var arrivalAnnounced = false
+        GuidanceBus.updates.collect { update ->
+            update ?: return@collect
+            val now = SystemClock.elapsedRealtime()
+
+            if (update.obstaclePresent != lastObstacle) {
+                lastObstacle = update.obstaclePresent
+                if (update.obstaclePresent) {
+                    val meters = update.obstacleMm.takeIf { it > 0 }
+                        ?.let { String.format(Locale.US, ", %.1f meters", it / 1000f) } ?: ""
+                    val dodge = when (update.direction) {
+                        TurnDirection.LEFT -> " Step left."
+                        TurnDirection.RIGHT -> " Step right."
+                        else -> ""
+                    }
+                    speech.announce("Stop. Obstacle ahead$meters.$dodge",
+                        interrupt = true, urgent = true)
+                } else {
+                    speech.announce("Path clear.")
+                }
+                return@collect
+            }
+
+            // Arrival: once inside 12 m; re-armed when the user moves back out.
+            if (update.distanceM in 0..12 && !arrivalAnnounced) {
+                arrivalAnnounced = true
+                speech.announce("Destination ahead, about ${update.distanceM} meters.")
+            } else if (update.distanceM > 25 || update.distanceM < 0) {
+                arrivalAnnounced = false
+            }
+
+            // Route guidance while the path is clear: 15-degree buckets,
+            // minimum 3.5 s between prompts.
+            if (!update.obstaclePresent) {
+                val bucket = update.deltaDeg / 15
+                val changed = update.direction != lastSpokenDir || bucket != lastSpokenBucket
+                if (changed && now - lastTurnSpokenAt > 3500L) {
+                    val line = when (update.direction) {
+                        TurnDirection.LEFT -> "Turn left, about ${update.deltaDeg} degrees."
+                        TurnDirection.RIGHT -> "Turn right, about ${update.deltaDeg} degrees."
+                        TurnDirection.STRAIGHT -> "On course, go straight."
+                        TurnDirection.NONE -> null
+                    }
+                    if (line != null) {
+                        lastSpokenDir = update.direction
+                        lastSpokenBucket = bucket
+                        lastTurnSpokenAt = now
+                        speech.announce(line)
+                    }
+                }
+            }
+        }
+    }
+
+    // Cane link status, spoken (the initial state is not announced).
+    LaunchedEffect(Unit) {
+        var prevConnected: Boolean? = null
+        caneLink.state.collect { state ->
+            val connected = state is CaneLinkState.Connected
+            if (prevConnected != null && connected != prevConnected) {
+                speech.announce(if (connected) "Cane connected." else "Cane disconnected.")
+            }
+            prevConnected = connected
+        }
     }
 
     // ---------- Guidance export (Bluetooth -> Arduino, broadcasts -> other apps) ----------

@@ -89,7 +89,7 @@ is in range.
 |---|---|
 | a number, e.g. `1200` | sets the presence threshold (mm); ack `{"thr":1200}` |
 | `get` | state snapshot as JSON |
-| `TURN LEFT 90` / `TURN RIGHT 35` | route turn: wheel turns that way, speed scaled by the angle (≥75° → 5, 45–74° → 4, 30–44° → 3, else 2) |
+| `TURN LEFT 90` / `TURN RIGHT 35` | route turn: wheel turns that way at full speed |
 | other text containing `left` / `right` | full-speed dodge (e.g. `AVOID LEFT`) |
 | text containing `clear` / `stop` / `straight` | stops the wheel |
 | any other text | shown on the dashboard as "message from phone" |
