@@ -106,7 +106,10 @@ class ShepherdService : LifecycleService() {
     private val binder = LocalBinder()
 
     private val engine = DetectionEngine()
+
+    /** Metric depth, domain-matched: Hypersim indoors, VKITTI outdoors. */
     private val depthEngine = DepthEngine()
+    private val depthEngineOutdoor = DepthEngine("depth_anything_v2_outdoor.onnx")
     private val segEngine = SegEngine(SegEngine.FFNET)
     private val segEngineAde = SegEngine(SegEngine.ADE)
     private val pathPipeline = PathPipeline()
@@ -246,6 +249,9 @@ class ShepherdService : LifecycleService() {
             caneLink.reading.collect { r ->
                 if (r?.present == true && r.mm != null) {
                     pathPipeline.grid.markNearObstacle(r.mm / 1000f)
+                    // THE haptic signal: obstacle at the cane -> STOP buzz,
+                    // repeating (rate-limited) while it stays in view
+                    if (guidanceEnabled) haptics.caneStop()
                     if (!lastCanePresent) DebugLog.d("CANE", "obstacle at ${r.mm} mm")
                     lastCanePresent = true
                 } else if (lastCanePresent) {
@@ -280,6 +286,7 @@ class ShepherdService : LifecycleService() {
                 val detectionOk = engine.initialize(this@ShepherdService)
                 if (detectionOk) {
                     depthEngine.initialize(this@ShepherdService)
+                    depthEngineOutdoor.initialize(this@ShepherdService)
                     segEngine.initialize(this@ShepherdService)
                     segEngineAde.initialize(this@ShepherdService)
                 }
@@ -293,7 +300,10 @@ class ShepherdService : LifecycleService() {
             visionLabel = buildString {
                 append(engine.activeProvider)
                 if (depthEngine.available) {
-                    append(" +depth(").append(depthEngine.activeProvider).append(")")
+                    append(" +depth-in(").append(depthEngine.activeProvider).append(")")
+                }
+                if (depthEngineOutdoor.available) {
+                    append(" +depth-out(").append(depthEngineOutdoor.activeProvider).append(")")
                 }
                 if (segEngine.available) {
                     append(" +seg(").append(segEngine.activeProvider).append(")")
@@ -325,9 +335,11 @@ class ShepherdService : LifecycleService() {
                 depthEngine,
                 ::onFrame,
                 segEngine.takeIf { it.available },
-                pathPipeline.takeIf { depthEngine.available },
+                pathPipeline.takeIf { depthEngine.available || depthEngineOutdoor.available },
                 segEngineAde.takeIf { it.available },
+                depthEngineOutdoor.takeIf { it.available },
             )
+            fa.indoorMode = compassNav.mode == dev.quad.shepherd.nav.CompassNav.Mode.INDOOR
             analyzer = fa
             analysis.setAnalyzer(analysisExecutor, fa)
 
@@ -366,6 +378,9 @@ class ShepherdService : LifecycleService() {
         pathPipeline.goalAngleDeg = compassNav.goalAngleDeg?.coerceIn(-90f, 90f)
         // Heading anchors the planner's commitment in world space
         pathPipeline.headingDeg = compassNav.headingDeg
+        // Nav mode selects the domain-matched depth + seg models
+        analyzer?.indoorMode =
+            compassNav.mode == dev.quad.shepherd.nav.CompassNav.Mode.INDOOR
         if (result.depthLatencyMs > 0) lastDepthMs = result.depthLatencyMs
         // v2: guidance comes from the polar plan on the BEV grid; the v1
         // column engine remains the fallback when depth/seg models are absent
@@ -404,8 +419,9 @@ class ShepherdService : LifecycleService() {
         )
         aggregator.offer(fused)
         actuator.sendGuidance(fused)
-        // Haptics follow the FUSED command so turns are felt, not just seen
-        if (guidanceEnabled) haptics.update(fused)
+        // Haptics deliberately NOT driven from vision: the only buzz is the
+        // cane sensor's STOP (see startCaneLink) so a vibration always
+        // means "obstacle at the cane", never routine steering
         uiListener?.onFrame(result.copy(detections = detections), fused)
     }
 
