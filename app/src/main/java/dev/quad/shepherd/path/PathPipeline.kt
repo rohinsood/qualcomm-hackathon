@@ -35,6 +35,11 @@ class PathPipeline(
     /** Route goal angle in degrees (from NavEngine steer), or null. */
     @Volatile var goalAngleDeg: Float? = null
 
+    /** Compass heading (degrees, NaN when unknown) — anchors the planner's
+     *  committed direction in world space while the camera pans. */
+    @Volatile var headingDeg = Float.NaN
+    private var lastPlanHeadingDeg = Float.NaN
+
     @Volatile var cameraHeightM = 1.35f
 
     @Volatile var hFovDeg = 70f
@@ -51,11 +56,23 @@ class PathPipeline(
     }
 
     /** Plan on the persistent grid; callable every frame. */
-    fun plan(): PolarPlanner.Plan =
-        planner.plan(grid, goalAngleDeg, segClearance, hFovDeg)
+    fun plan(): PolarPlanner.Plan {
+        val h = headingDeg
+        if (!h.isNaN()) {
+            if (!lastPlanHeadingDeg.isNaN()) {
+                var d = h - lastPlanHeadingDeg
+                while (d > 180f) d -= 360f
+                while (d < -180f) d += 360f
+                if (kotlin.math.abs(d) > 0.5f) planner.rotateFrame(d)
+            }
+            lastPlanHeadingDeg = h
+        }
+        return planner.plan(grid, goalAngleDeg, segClearance, hFovDeg)
+    }
 
     fun reset() {
         grid.clear()
         planner.reset()
+        lastPlanHeadingDeg = Float.NaN
     }
 }

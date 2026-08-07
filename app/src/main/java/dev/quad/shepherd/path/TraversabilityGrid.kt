@@ -65,6 +65,11 @@ class TraversabilityGrid(
 
     val logOdds = FloatArray(cellsWide * cellsDeep)
 
+    /** Smoothed ground-plane offset (m); exposed for debug logging. */
+    var groundOffsetEma = 0f
+        private set
+    private var groundOffsetInit = false
+
     fun isObstacle(ix: Int, iz: Int): Boolean =
         logOdds[iz * cellsWide + ix] > OBSTACLE_THRESHOLD
 
@@ -103,19 +108,21 @@ class TraversabilityGrid(
 
         // Self-calibrate the ground level: the nominal camera height is a
         // guess, and a ±10 cm error would reclassify the whole floor as an
-        // obstacle band. The median height of near points in the lower
-        // image third is a robust per-frame ground-offset estimate.
-        // Roll-agnostic: sample heights across the WHOLE frame and take the
-        // 25th percentile — the floor is the lowest large surface however
-        // the phone is oriented (image-bottom-third sampling broke when the
-        // phone was propped sideways).
-        var groundOffset = 0f
+        // obstacle band. The sample stride is derived from the frame size
+        // so coverage spans the WHOLE image — a fixed stride filled the
+        // sample cap from the top rows alone, and with the camera pitched
+        // at a desk the "ground" latched onto the desk surface, turning
+        // the entire room into an obstacle field. A low percentile finds
+        // the floor even when it is a minority surface, and an EMA keeps
+        // one bad frame from repainting the map.
         run {
             val samples = FloatArray(512)
             var n = 0
-            var sv = 0
+            val strideV = (depthH / 22).coerceAtLeast(3)
+            val strideU = (depthW / 22).coerceAtLeast(3)
+            var sv = strideV / 2
             while (sv < depthH && n < samples.size) {
-                var su = 0
+                var su = strideU / 2
                 while (su < depthW && n < samples.size) {
                     val d = depth[sv * depthW + su]
                     if (d.isFinite() && d in MIN_DEPTH_M..5f) {
@@ -124,17 +131,22 @@ class TraversabilityGrid(
                         val yUp = -xi * sinR + yi * cosR
                         samples[n++] = cameraHeightM + (yUp * cosP - d * sinP)
                     }
-                    su += 7
+                    su += strideU
                 }
-                sv += 5
+                sv += strideV
             }
-            if (n >= 60) {
+            if (n >= 80) {
                 val sorted = samples.copyOf(n)
                 sorted.sort()
-                val p25 = sorted[n / 4]
-                if (abs(p25) < 0.7f) groundOffset = p25
+                val p12 = sorted[n * 12 / 100]
+                if (abs(p12) < 0.7f) {
+                    groundOffsetEma = if (!groundOffsetInit) p12
+                    else groundOffsetEma + 0.25f * (p12 - groundOffsetEma)
+                    groundOffsetInit = true
+                }
             }
         }
+        val groundOffset = groundOffsetEma
 
         var v = 0
         while (v < depthH) {
@@ -199,6 +211,8 @@ class TraversabilityGrid(
 
     fun clear() {
         logOdds.fill(0f)
+        groundOffsetEma = 0f
+        groundOffsetInit = false
     }
 
     private fun decay() {

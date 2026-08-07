@@ -29,9 +29,14 @@ class DepthCalibrator {
      */
     fun addSample(modelMeters: Float, referenceMeters: Float) {
         if (modelMeters !in 0.2f..25f || referenceMeters !in 0.3f..20f) return
-        val ratio = (referenceMeters / modelMeters).coerceIn(0.4f, 2.5f)
+        // REJECT implausible ratios — coercing them into range still drags
+        // the EMA, and indoor pinhole references (truncated people, posters,
+        // reflections) produce plenty of junk. The model is metric: any
+        // real bias is mild.
+        val ratio = referenceMeters / modelMeters
+        if (ratio !in 0.6f..1.8f) return
         scale = if (samples == 0) ratio else 0.9f * scale + 0.1f * ratio
-        scale = scale.coerceIn(0.5f, 2f)
+        scale = scale.coerceIn(0.7f, 1.4f)
         samples++
     }
 

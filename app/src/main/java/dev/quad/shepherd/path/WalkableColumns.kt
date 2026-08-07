@@ -51,4 +51,34 @@ object WalkableColumns {
         }
         return out
     }
+
+    /**
+     * Same signal from the ENSEMBLE-merged walkability mask (1 walkable,
+     * 0 not, -1 no opinion / outside the frame). -1 pixels are excluded
+     * from the denominator; a column with no opinions reads 0 — never
+     * steer into what nobody has seen.
+     */
+    fun clearanceFromMask(mask: ByteArray, maskW: Int, maskH: Int): FloatArray {
+        val out = FloatArray(NUM_COLUMNS)
+        val y0 = (maskH * BAND_TOP).toInt().coerceIn(0, maskH - 1)
+        val y1 = (maskH * BAND_BOTTOM).toInt().coerceIn(y0 + 1, maskH)
+        val colW = maskW.toFloat() / NUM_COLUMNS
+        for (c in 0 until NUM_COLUMNS) {
+            val x0 = (c * colW).toInt()
+            val x1 = ((c + 1) * colW).toInt().coerceAtMost(maskW)
+            var walkable = 0
+            var total = 0
+            for (y in y0 until y1) {
+                val row = y * maskW
+                for (x in x0 until x1) {
+                    when (mask[row + x].toInt()) {
+                        1 -> { walkable++; total++ }
+                        0 -> total++
+                    }
+                }
+            }
+            out[c] = if (total > 0) walkable.toFloat() / total else 0f
+        }
+        return out
+    }
 }
