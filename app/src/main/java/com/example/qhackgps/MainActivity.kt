@@ -40,14 +40,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -75,8 +78,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -131,6 +137,12 @@ private const val AVOID_TURN_DEG = 45
 
 /** Route turns smaller than this are not sent to the cane wheel (deadband). */
 private const val CANE_TURN_MIN_DEG = 15
+
+/**
+ * Below this speed a GPS bearing is mostly noise, so it can't be used as the
+ * reference when calibrating the compass. Roughly a slow walk.
+ */
+private const val MIN_CALIBRATION_SPEED_MPS = 0.5f
 
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -217,7 +229,18 @@ fun NavigatorScreen() {
     var magneticAzimuth by remember { mutableStateOf(Float.NaN) }
     var compassAccuracy by remember { mutableStateOf(SensorManager.SENSOR_STATUS_ACCURACY_HIGH) }
     var compassAvailable by remember { mutableStateOf(true) }
-    DisposableEffect(Unit) {
+
+    // Manual trim added on top of the sensor. The remap below assumes one grip
+    // (upright landscape, aiming with the back camera); strapped to a cane or held
+    // another way the raw heading is off by a fixed amount, and this is that amount.
+    var headingOffset by remember { mutableStateOf(NavSettings.headingOffset(context)) }
+
+    // Bumping this tears the listener down and re-registers it, which is what makes
+    // "reset" a real reset: the smoothing filter's state lives in the listener, so a
+    // new listener starts from the next raw sample instead of easing over from a
+    // stale one.
+    var sensorEpoch by remember { mutableStateOf(0) }
+    DisposableEffect(sensorEpoch) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (sensor == null) {
@@ -268,23 +291,41 @@ fun NavigatorScreen() {
         } ?: 0f
     }
     val trueHeading = if (magneticAzimuth.isNaN()) Float.NaN
-    else (magneticAzimuth + declination + 360f) % 360f
+    else wrap360(magneticAzimuth + declination + headingOffset)
+
+    // Course over ground: the one heading reference that doesn't come from the
+    // magnetometer, so it's what the trim gets calibrated against. Only meaningful
+    // while actually walking — standing still, GPS bearing is noise.
+    val gpsCourse = currentLocation
+        ?.takeIf { it.hasBearing() && it.hasSpeed() && it.speed >= MIN_CALIBRATION_SPEED_MPS }
+        ?.bearing
 
     // ---------- Destination + route ----------
     var destination by remember { mutableStateOf<LatLng?>(null) }
     var roadRoute by remember { mutableStateOf<List<LatLng>?>(null) }
     var routeLoading by remember { mutableStateOf(false) }
 
+    // true  = Google walking directions (follows pavements and crossings)
+    // false = straight line from here to the destination
+    var roadRouting by remember { mutableStateOf(NavSettings.roadRouting(context)) }
+
     val curLatLng = currentLocation?.let { LatLng(it.latitude, it.longitude) }
     val hasFix = curLatLng != null
 
-    LaunchedEffect(destination, hasFix) {
+    LaunchedEffect(destination, hasFix, roadRouting) {
         roadRoute = null
+        // Cleared up front, and in the finally below, so no early return or
+        // mid-flight cancellation can leave the HUD stuck on "finding route…".
+        routeLoading = false
+        if (!roadRouting) return@LaunchedEffect
         val dest = destination ?: return@LaunchedEffect
         val origin = curLatLng ?: return@LaunchedEffect
         routeLoading = true
-        roadRoute = fetchWalkingRoute(origin, dest, mapsApiKey(context))
-        routeLoading = false
+        try {
+            roadRoute = fetchWalkingRoute(origin, dest, mapsApiKey(context))
+        } finally {
+            routeLoading = false
+        }
     }
 
     // ---------- Guidance math ----------
@@ -522,6 +563,7 @@ fun NavigatorScreen() {
                 targetBearing = targetBearing,
                 routeIsRoad = roadRoute != null,
                 routeLoading = routeLoading,
+                roadRoutingEnabled = roadRouting,
                 compassNeedsCalibration =
                     compassAccuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW,
                 avoidance = avoidance,
@@ -603,6 +645,75 @@ fun NavigatorScreen() {
                     onDismiss = { showBtDialog = false },
                 )
             }
+
+            // ----- Direction calibration -----
+            // Amber whenever a trim is applied, so it's obvious at a glance that
+            // the heading is not the raw sensor reading.
+            var showCalibration by remember { mutableStateOf(false) }
+            val trimmed = headingOffset != 0f
+            SmallFloatingActionButton(
+                onClick = { showCalibration = true },
+                containerColor =
+                    if (trimmed) HudOrange else FloatingActionButtonDefaults.containerColor,
+                contentColor =
+                    if (trimmed) Color.White else MaterialTheme.colorScheme.onPrimaryContainer,
+            ) {
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription =
+                        if (trimmed) "Direction calibration, trimmed ${headingOffset.roundToInt()} degrees"
+                        else "Direction calibration",
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
+            if (showCalibration) {
+                HeadingCalibrationDialog(
+                    rawAzimuth = magneticAzimuth,
+                    declination = declination,
+                    trueHeading = trueHeading,
+                    headingOffset = headingOffset,
+                    gpsCourse = gpsCourse,
+                    needsFigureEight =
+                        compassAccuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW,
+                    onOffsetChange = {
+                        headingOffset = it
+                        NavSettings.setHeadingOffset(context, it)
+                    },
+                    onResetSensor = {
+                        // Drop the current reading too, so the fresh listener starts
+                        // from the next raw sample rather than easing off a stale one.
+                        magneticAzimuth = Float.NaN
+                        sensorEpoch++
+                    },
+                    onDismiss = { showCalibration = false },
+                )
+            }
+
+            // ----- Routing mode -----
+            SmallFloatingActionButton(
+                onClick = {
+                    roadRouting = !roadRouting
+                    NavSettings.setRoadRouting(context, roadRouting)
+                },
+                modifier = Modifier.semantics {
+                    contentDescription =
+                        if (roadRouting) "Routing: Google walking directions. Tap for straight line."
+                        else "Routing: straight line. Tap for Google walking directions."
+                },
+                containerColor =
+                    if (roadRouting) HudBlue else FloatingActionButtonDefaults.containerColor,
+                contentColor =
+                    if (roadRouting) Color.White else MaterialTheme.colorScheme.onPrimaryContainer,
+            ) {
+                Text(
+                    text = if (roadRouting) "MAP" else "LINE",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
             if (dest != null) {
                 SmallFloatingActionButton(onClick = { destination = null }) {
                     Icon(Icons.Default.Close, contentDescription = "Clear destination")
@@ -637,6 +748,7 @@ private fun GuidanceCard(
     targetBearing: Float?,
     routeIsRoad: Boolean,
     routeLoading: Boolean,
+    roadRoutingEnabled: Boolean,
     compassNeedsCalibration: Boolean,
     avoidance: TurnDirection?,
     obstacleMm: Int?,
@@ -766,10 +878,13 @@ private fun GuidanceCard(
                         fontWeight = FontWeight.Black,
                         color = if (aligned) HudGreen else HudInk,
                     )
+                    // Distinguish the straight line you asked for from the straight
+                    // line you got because Directions had nothing for us.
                     val mode = when {
+                        !roadRoutingEnabled -> "straight line"
                         routeLoading -> "finding route…"
                         routeIsRoad -> "following route"
-                        else -> "direct line"
+                        else -> "no route — straight line"
                     }
                     Text(
                         text = "${distanceToDest?.let { formatDistance(it) } ?: "—"} to go • $mode",
@@ -794,6 +909,98 @@ private fun GuidanceCard(
             }
         }
     }
+}
+
+/**
+ * Trim for the compass, and a way to clear it.
+ *
+ * The sensor remap in [NavigatorScreen] assumes one grip — phone upright in
+ * landscape, aiming with the back camera. Strapped to the cane, or carried any
+ * other way, the raw heading is off by a roughly constant angle; everything
+ * downstream (the turn arrow, the cane's wheel) inherits that error. This sets
+ * the angle, preferably from GPS course over ground, otherwise by hand.
+ */
+@Composable
+private fun HeadingCalibrationDialog(
+    rawAzimuth: Float,
+    declination: Float,
+    trueHeading: Float,
+    headingOffset: Float,
+    gpsCourse: Float?,
+    needsFigureEight: Boolean,
+    onOffsetChange: (Float) -> Unit,
+    onResetSensor: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val canAlign = gpsCourse != null && !rawAzimuth.isNaN()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Direction calibration") },
+        text = {
+            // The app is used in landscape, where dialog height is tight — an
+            // AlertDialog body doesn't scroll on its own.
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    text = "Heading now: " +
+                        if (trueHeading.isNaN()) "—" else "${trueHeading.roundToInt()}°",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "sensor ${if (rawAzimuth.isNaN()) "—" else "${rawAzimuth.roundToInt()}°"}" +
+                        " · declination ${declination.roundToInt()}°" +
+                        " · trim ${headingOffset.roundToInt()}°",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (needsFigureEight) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "The magnetometer is uncalibrated — wave the phone in a " +
+                            "figure-8 first, or any trim set now will drift away.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = HudOrange,
+                    )
+                }
+
+                // One compact action row: the dialog has to fit in landscape, which
+                // is where this app lives, and anything below the fold won't be found.
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = {
+                            gpsCourse?.let { onOffsetChange(wrap180(it - rawAzimuth - declination)) }
+                        },
+                        enabled = canAlign,
+                    ) { Text("Align to GPS") }
+                    TextButton(onClick = { onOffsetChange(wrap180(headingOffset - 5f)) }) {
+                        Text("−5°")
+                    }
+                    TextButton(onClick = { onOffsetChange(wrap180(headingOffset + 5f)) }) {
+                        Text("+5°")
+                    }
+                }
+                Text(
+                    text = if (gpsCourse != null)
+                        "GPS says you're walking ${gpsCourse.roundToInt()}° — Align makes the " +
+                            "compass agree. Or nudge until the arrow matches the way the " +
+                            "phone actually faces."
+                    else "Align needs you walking in a straight line, holding the phone the " +
+                        "way you'll carry it. Standing still, nudge until the arrow matches " +
+                        "the way the phone actually faces.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {
+            // Back to the raw sensor: clears the trim and re-registers the listener.
+            TextButton(onClick = {
+                onOffsetChange(0f)
+                onResetSensor()
+            }) { Text("Reset") }
+        },
+    )
 }
 
 @SuppressLint("MissingPermission")
