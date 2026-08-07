@@ -53,6 +53,13 @@ POST_TIMEOUT_S = 1.0
 STAIRS_STOP_HOLD_S = 3.0       # force-hold wheel stop on STAIRS for this long
 EDGE_VIBRO_COOLDOWN_S = 2.0    # non-stair edge vibro at most every 2s
 LOOP_SLEEP = 0.3               # throttle inference loop
+# How long the indoor/outdoor group must be stable before sending a mode switch.
+# Prevents rapid flickering when crossing a threshold (e.g. a doorway).
+MODE_SWITCH_HOLD_S = 30.0
+
+# Which terrain labels belong to which nav mode.
+OUTDOOR_TERRAINS = {"sidewalk", "road", "grass"}
+INDOOR_TERRAINS = {"indoor_floor"}
 
 # ---- 6-class terrain taxonomy ----------------------------------------------
 TAXONOMY = ("sidewalk", "road", "grass", "stairs", "indoor_floor", "unknown")
@@ -340,6 +347,11 @@ class CanePoster:
         self._last_edge_vibro_t = 0.0
         self._last_err = ""
         self._last_ok: bool | None = None
+        # Mode-switch stability tracking: the candidate mode must be held
+        # continuously for MODE_SWITCH_HOLD_S before the command fires.
+        self._mode_candidate: str | None = None   # "INDOOR MODE" | "OUTDOOR MODE"
+        self._mode_candidate_since: float = 0.0
+        self._sent_mode: str | None = None        # last mode command actually sent
 
     def _post(self, path: str, payload: dict) -> bool:
         try:
@@ -358,29 +370,57 @@ class CanePoster:
             return False
 
     def announce_terrain(self, terrain: str):
-        """Rate-limited terrain text announcement on debounced class change.
-        Also pushes a JSON terrain label to the cane state (relayed to phone
-        over BLE state characteristic for automatic indoor/outdoor mode switch)."""
+        """Send terrain updates to the cane, with a 30-second stability gate on
+        indoor/outdoor mode switches to prevent flicker at thresholds (doorways).
+
+        - STAIRS AHEAD / CLEAR fire immediately on change (safety / info).
+        - INDOOR MODE / OUTDOOR MODE only fire after MODE_SWITCH_HOLD_S seconds
+          of continuous classification in the same mode group, and only when the
+          mode actually changed.
+        """
         now = time.monotonic()
-        if terrain == self._last_terrain:
-            return
         if now - self._last_post_t < POST_INTERVAL_S:
             return
-        text_map = {
-            "sidewalk": "OUTDOOR MODE",
-            "road": "OUTDOOR MODE",
-            "grass": "OUTDOOR MODE",
-            "stairs": "STAIRS AHEAD",
-            "indoor_floor": "INDOOR MODE",
-            "unknown": "CLEAR",
-        }
-        text = text_map.get(terrain, "CLEAR")
-        if self.transport == "motor":
-            self._post("/api/motor", {"dir": 0})
+
+        # Determine the message this terrain maps to.
+        if terrain in OUTDOOR_TERRAINS:
+            mode_text = "OUTDOOR MODE"
+        elif terrain in INDOOR_TERRAINS:
+            mode_text = "INDOOR MODE"
         else:
-            self._post("/api/phone", {"text": text})
+            mode_text = None  # stairs/unknown — handled separately or below
+
+        # Non-mode messages (STAIRS AHEAD, CLEAR) fire immediately on change.
+        if mode_text is None:
+            text_map = {"stairs": "STAIRS AHEAD", "unknown": "CLEAR"}
+            text = text_map.get(terrain, "CLEAR")
+            if text != self._last_terrain:
+                self._post("/api/phone", {"text": text})
+                self._last_terrain = terrain
+                self._last_post_t = now
+            return
+
+        # Mode messages: accumulate stability before firing.
+        if mode_text != self._mode_candidate:
+            # Candidate changed — restart the timer.
+            self._mode_candidate = mode_text
+            self._mode_candidate_since = now
+            return  # not stable yet
+
+        elapsed = now - self._mode_candidate_since
+        if elapsed < MODE_SWITCH_HOLD_S:
+            return  # still waiting for stability
+
+        # Stable for 30s — fire only if the mode actually changed.
+        if mode_text == self._sent_mode:
+            return  # already in this mode, nothing to do
+
+        self._post("/api/phone", {"text": mode_text})
+        self._sent_mode = mode_text
         self._last_terrain = terrain
         self._last_post_t = now
+        print(f"[terrain] mode switch -> {mode_text} "
+              f"(stable for {elapsed:.0f}s)", flush=True)
 
     def stairs_stop(self):
         """STAIRS GUARDRAIL: force-stop wheel + distinctive double-vibro."""
@@ -406,12 +446,18 @@ class CanePoster:
         self._last_edge_vibro_t = now
 
     def status(self) -> dict:
+        now = time.monotonic()
+        elapsed = now - self._mode_candidate_since if self._mode_candidate else 0
         return {
             "transport": self.transport,
             "last_terrain": self._last_terrain,
             "last_ok": self._last_ok,
             "last_err": self._last_err,
-            "stairs_hold_remaining_s": max(0, self._stairs_hold_until - time.monotonic()),
+            "stairs_hold_remaining_s": max(0, self._stairs_hold_until - now),
+            "mode_candidate": self._mode_candidate,
+            "mode_candidate_stable_s": round(elapsed, 1),
+            "mode_candidate_needed_s": MODE_SWITCH_HOLD_S,
+            "sent_mode": self._sent_mode,
         }
 
 
