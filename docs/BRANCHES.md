@@ -23,7 +23,7 @@ git checkout v3
 app/                            Android app  (Kotlin, package com.example.qhackgps — "qhackGPS")
 board/distance-watch/           Cane board app  (Arduino UNO Q: sketch + Python + web dashboard + QCane host daemon)
 board/ble-bridge/               Nordic UART bridge the phone talks to  (advertises "Distance Watch")
-board/depth-spike/              On-board depth bench + live MJPEG viewer  (the experiment behind PERFORMANCE.md)
+board/depth-spike/              Depth bench + USB ground-cam navigator + terrain sensor  (bench: the experiment behind PERFORMANCE.md)
 arduino/qhack_guidance_motor/   Older HC-05 SPP demo sketch, fed by the `QG,…` wire lines
 Hardware/                       CAD, BOM, assembly
 docs/                           this documentation

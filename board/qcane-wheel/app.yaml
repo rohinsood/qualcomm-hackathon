@@ -1,0 +1,17 @@
+# app.yaml: The main configuration file for your Arduino App.
+
+# The user-visible name of the application.
+name: QCane Wheel
+
+# The icon for the application, can be an emoji or a short string.
+icon: 🦯
+
+# web_ui serves the QCane Link dashboard (port 7000): per-Modulino
+# informatics, live motor graphs, and manual wheel/vibro controls.
+# Bluetooth is NOT a brick: the phone GATT lives in host/qcane_btd.py on the
+# host (this container has no D-Bus / AF_BLUETOOTH) and hands commands over
+# a Unix socket in .run/.
+bricks:
+  - arduino:web_ui
+
+description: Merged cane board app — phone-steered wheel (QCane GATT), obstacle vibro from the distance Modulino, LED-matrix wheel display, and a live dashboard.

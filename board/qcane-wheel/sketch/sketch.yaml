@@ -1,0 +1,18 @@
+profiles:
+  default:
+    platforms:
+      - platform: arduino:zephyr
+    libraries:
+      # 0.9.0 is the first version with ModulinoMotors; the 0.7.0 bundled with
+      # the core does not have it.
+      - Arduino_Modulino (0.9.0)
+      # Modulino.h includes every sensor driver, and a sketch profile does not
+      # resolve transitive dependencies, so they all have to be listed here.
+      - STM32duino VL53L4CD (1.0.5)
+      - STM32duino VL53L4ED (1.0.1)
+      - Arduino_LSM6DSOX (1.1.2)
+      - Arduino_LPS22HB (1.0.2)
+      - Arduino_HS300x (1.0.0)
+      - ArduinoGraphics (1.1.4)
+      - Arduino_LTR381RGB (1.0.0)
+default_profile: default

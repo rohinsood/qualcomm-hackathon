@@ -15,7 +15,7 @@ no subscription, no signal required. Built, printed, assembled, and walked with.
 | **~$196 total** | Excluding the phone. Commercial smart canes: $800–$1,150 |
 | **No depth sensor** | Monocular metric depth on the Hexagon NPU replaces a LiDAR unit |
 | **Fully offline** | Airplane mode changes nothing about obstacle avoidance |
-| **3 neural networks per frame** | ~11 Hz perception, 5 Hz motor commands, on a phone |
+| **AI across the Qualcomm multiverse** | Phone NPU/GPU + board CPU, running 8 models across 2 Snapdragon SoCs simultaneously |
 | **Open source** | Code, CAD, BOM, wiring — AGPL-3.0 |
 
 ---
@@ -63,7 +63,15 @@ that steering on a phone, at the cadences required, on a battery.
 
 ## Edge AI on the Qualcomm stack
 
-### Models running concurrently on the Snapdragon 8 Elite
+AI runs on **two Qualcomm SoCs simultaneously** — the phone's Snapdragon 8 Elite
+(NPU + GPU) handles high-framerate vision, while the Arduino UNO Q's Dragonwing
+QRB2210 (4×A53 CPU) runs a terrain classifier and a depth navigator on a
+downward-facing camera at the cane handle. Different models, different devices,
+different parts of the problem — all on Qualcomm silicon, all offline.
+
+### Models running across the system
+
+**Phone — Snapdragon 8 Elite (Hexagon NPU + Adreno GPU):**
 
 | Model | What it does | Cadence | Accelerator |
 |---|---|---|---|
@@ -74,8 +82,48 @@ that steering on a phone, at the cadences required, on a battery.
 | **Qwen3.5-2B** (Q4_0 GGUF) | On-device scene companion | on request | GenieX → Hexagon NPU |
 | **Kokoro-82M** | Neural text-to-speech | on utterance | sherpa-onnx, CPU |
 
-Only one segmentation model runs per frame — outdoor or indoor, domain-matched.
-This halves seg compute vs. ensembling both.
+**Board — Dragonwing QRB2210 (4×Cortex-A53 @ 2 GHz):**
+
+| Model | What it does | Cadence | Runtime |
+|---|---|---|---|
+| **Places365 ResNet18** | Terrain classification → 6-class taxonomy | ~2.3 fps | ONNX Runtime, CPU |
+| **Depth-Anything-V2-Small** (126×126) | Ground-cam depth navigator | ~2.2 fps | ONNX Runtime, CPU |
+
+![Terrain classifier live](image.png)
+
+*Terrain sensor running on the UNO Q: Places365 classifying the ground surface
+(GRASS, 0.92 confidence) at 435 ms / 2.3 fps, with Canny+Hough stair-edge
+overlay in red. On a stairs detection, the wheel stops immediately and holds for
+3 seconds — regardless of what the phone is asking for.*
+
+### The terrain sensor — board-side AI that overrides the phone
+
+The board's downward camera runs a **Places365 ResNet18** scene classifier
+aggregated into a 6-class terrain taxonomy:
+
+| Class | Meaning | Action |
+|---|---|---|
+| `sidewalk` | Walkable outdoor surface | → phone: OUTDOOR MODE |
+| `road` | Vehicular surface | warn — user shouldn't be here |
+| `grass` | Natural terrain | → phone: OUTDOOR MODE |
+| `stairs` | Staircase / escalator / drop-off | **IMMEDIATE WHEEL STOP + 3 s hold** |
+| `indoor_floor` | Interior walking surface | → phone: INDOOR MODE |
+| `unknown` | Ambiguous | no action |
+
+The stair-edge detector is a second signal: Canny + probabilistic Hough on the
+lower 60% of the frame, looking for ≥5 parallel near-horizontal edges within 30%
+of frame height. When it fires alongside the classifier, confidence is HIGH and
+the stop is non-negotiable.
+
+This is the one board-side motor command that **overrides the phone's steering
+authority**. The phone drives the wheel left/right/clear — but STAIRS STOP takes
+priority, because a staircase detected from the ground-facing camera is a
+near-immediate hazard that the forward-facing phone may not see until the user is
+at the edge.
+
+The terrain label also **automatically switches the phone's nav mode** —
+indoor_floor → indoor models (SegFormer + Hypersim depth), sidewalk/grass →
+outdoor models (FFNet + VKITTI depth). No manual toggle needed.
 
 ### Accelerator allocation
 
@@ -98,26 +146,31 @@ the compute for no measurable loss.
 
 ### Measured on-device
 
-| What | Result |
-|---|---|
-| Companion SLM first token (Qwen3.5-2B, Hexagon) | **186 ms** |
-| Companion SLM decode rate | **12.1 tok/s** |
-| Depth on UNO Q CPU (DA-V2, 252×252) | 1728 ms — **not viable for steering** |
-| MiDaS int8 on UNO Q CPU | 1001 ms — **slower than float** (no NPU = dequant overhead for nothing) |
+| What | Device | Result |
+|---|---|---|
+| Companion SLM first token (Qwen3.5-2B, Hexagon) | S25 Ultra | **186 ms** |
+| Companion SLM decode rate | S25 Ultra | **12.1 tok/s** |
+| Terrain classifier (Places365 ResNet18) | UNO Q | **435 ms / 2.3 fps** |
+| Depth navigator (DA-V2, 126×126) | UNO Q | **452 ms / 2.2 fps** |
+| Depth at higher res (DA-V2, 252×252) | UNO Q | 1728 ms — too slow for steering |
+| MiDaS int8 on CPU | UNO Q | 1001 ms — **slower than float** (no NPU = dequant overhead) |
 
-The last two rows are why perception lives on the phone's NPU rather than the
-board. Quantization is a win only when there's an accelerator that wants it.
+The board rows show why the split exists: the UNO Q runs terrain classification
+and near-field depth at viable rates, but the high-res depth needed for corridor
+planning at >3 Hz requires the phone's NPU. Each device does what it's good at.
 
 ### Qualcomm tooling
 
 | Tool | Role |
 |---|---|
-| **QNN / QAIRT EP** | All vision inference, three-tier fallback |
+| **QNN / QAIRT EP** | All phone vision inference, three-tier fallback |
 | **Qualcomm AI Hub** | Sourced FFNet-78S and SegFormer-B0 |
-| **GenieX** | On-device LLM runtime |
+| **GenieX** | On-device LLM runtime (Qwen3.5-2B) |
 | **QUAD MCP** | Profiled models on real silicon over ADB |
-| **Hexagon NPU** | Seg, depth, SLM decode |
-| **Adreno GPU** | Vision (preferred tier) |
+| **Hexagon NPU** | Seg, depth, SLM decode on the phone |
+| **Adreno GPU** | Vision (preferred tier) on the phone |
+| **Arduino UNO Q** (Dragonwing QRB2210) | Terrain classification + ground-cam depth + actuation |
+| **ONNX Runtime on QRB2210** | Board-side inference (Places365, DA-V2) at ~2.3 fps |
 | **Arduino UNO Q** (Dragonwing QRB2210) | Cane board — sensing and actuation |
 
 ---
@@ -140,11 +193,16 @@ Galaxy S25 Ultra — Snapdragon 8 Elite
   │
   ├─ CompassNav  GPS + heading → goal bearing (Google routes or beeline)
   │
-  └─ BLE ──► Arduino UNO Q
-               Modulino Motors → omni wheel steers
-               Modulino Distance → near-field STOP
-               Modulino Vibro → haptic alert
-               2 s failsafe
+  └─ BLE ──► Arduino UNO Q — Dragonwing QRB2210
+               ├─ Modulino Motors → omni wheel steers
+               ├─ Modulino Distance → near-field STOP
+               ├─ Modulino Vibro → haptic alert
+               ├─ Ground camera → terrain.py (Places365 ResNet18)
+               │    sidewalk/grass → OUTDOOR MODE
+               │    indoor_floor → INDOOR MODE
+               │    stairs → IMMEDIATE STOP + 3 s hold
+               ├─ Ground camera → navigator.py (DA-V2 depth, 7-column)
+               └─ 2 s failsafe
 ```
 
 ### Path-first planning
@@ -253,8 +311,10 @@ Instrumented per-frame: `adb logcat -s ShepherdTime`
 
 **Done:** metric depth on NPU · domain-matched seg · BEV log-odds grid ·
 path-first planner · walking routes + reroute · BLE steering · near-field ToF ·
-neural TTS · on-device STT · OCR · screen-thirds spoken guidance · 2B companion
-on Hexagon · full CAD · cane built and walked with
+terrain classification with stair-edge detection · automatic indoor/outdoor mode
+switching · ground-cam depth navigator · neural TTS · on-device STT · OCR ·
+screen-thirds spoken guidance · 2B companion on Hexagon · full CAD · cane built
+and walked with
 
 **Next:** end-to-end latency measurement · battery life characterization ·
 companion model thermal gating · moving-obstacle prediction · user evaluation

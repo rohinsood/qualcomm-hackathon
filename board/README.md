@@ -143,6 +143,41 @@ curl -X POST localhost:7000/api/threshold -H 'Content-Type: application/json' -d
 curl -X POST localhost:7000/api/graphs/clear                                                # wipe the motor graphs
 ```
 
+## Ground-cam extras (`depth-spike/`)
+
+Two standalone programs that read the board's USB webcam and drive the
+running cane app through the API above. They are optional — the cane works
+without them — and they share port `:8080`, so run **one at a time**:
+
+```bash
+python3 <repo>/board/depth-spike/navigator.py --cane-url http://127.0.0.1:7000
+python3 <repo>/board/depth-spike/terrain.py   --cane-url http://127.0.0.1:7000
+```
+
+- **`navigator.py`** — ground-cam obstacle avoidance: Depth-Anything-V2-small
+  at 126×126 (~2.2 fps on the four A53s), seven depth columns over the path
+  band, a self-tuning "empty corridor" baseline, and one verdict per frame —
+  STOP / LEFT / RIGHT / CLEAR. Debug MJPEG view plus `/stats` and
+  `/calibrate` on `:8080`. By default the verdict goes out as `/api/phone`
+  text, which the phone reads aloud; `--transport motor` drives `/api/motor`
+  directly — standalone-demo use only, because it competes with the phone's
+  steering (see "Steering authority" above).
+- **`terrain.py`** — terrain sensor: a Places365 ResNet18 classifier
+  (six-class taxonomy: sidewalk / road / grass / stairs / indoor_floor /
+  unknown) plus a Canny+Hough stair-edge detector gated on it. Announces
+  debounced surface changes via `/api/phone` ("INDOOR MODE", "OUTDOOR MODE",
+  "STAIRS AHEAD") and, on a stairs signature, stops the wheel and
+  double-buzzes the vibro, holding the stop for 3 s. A wheel *stop* is the
+  one board-side motor command that never fights the phone's authority.
+
+`terrain.py` needs a model that is **not in the repo**:
+`depth-spike/models/places365/resnet18_places365.onnx` with
+`categories_places365.txt` beside it. Export from the MIT CSAIL Places365
+ResNet18 checkpoint (torchvision resnet18 with 365 outputs -> ONNX, opset
+17); the categories file ships with the Places365 release. Missing files
+fail loudly at startup. `navigator.py`'s model
+(`models/depthanything/da_v2_small.onnx`) is already committed.
+
 ## Tuning
 
 - `distance-watch/sketch/sketch.ino`: `COMMAND_TIMEOUT_MS` (failsafe, 2 s).

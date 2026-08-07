@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QCane Link</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>&#128279; QCane Link</h1>
+      <span id="conn" class="pill">Connecting&hellip;</span>
+    </header>
+
+    <section class="lamp-wrap">
+      <div id="lamp" class="lamp" role="status">
+        <span id="lamp-label">NO OBJECT</span>
+      </div>
+    </section>
+
+    <section class="stat">
+      <div class="stat-label">Distance to object</div>
+      <div class="stat-value"><span id="mm">&mdash;</span><span class="unit">mm</span></div>
+      <div id="sub" class="stat-sub">waiting for data&hellip;</div>
+    </section>
+
+    <section class="card">
+      <h2>Manual controls</h2>
+      <div class="btn-row">
+        <button id="btn-left" class="btn dir" aria-pressed="false">&#9664; Spin left</button>
+        <button id="btn-stop" class="btn dir" aria-pressed="true">&#9632; Stop</button>
+        <button id="btn-right" class="btn dir" aria-pressed="false">Spin right &#9654;</button>
+      </div>
+      <div class="btn-row">
+        <button id="btn-buzz" class="btn">Buzz vibro (600 ms)</button>
+      </div>
+      <p class="hint">Buttons command the board the same way the phone does; the
+        active spin direction stays lit. The sketch stops everything on its own
+        if the link goes quiet for 2&nbsp;s.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Cameras</h2>
+        <span id="cam-status" class="pill">checking&hellip;</span>
+      </div>
+      <div class="cams">
+        <figure class="cam">
+          <img id="cam-raw" alt="Regular camera stream">
+          <figcaption>Regular &mdash; raw USB camera, no model</figcaption>
+        </figure>
+        <figure class="cam">
+          <img id="cam-terrain" alt="Terrain classification stream">
+          <figcaption>Classification &mdash; Places365 terrain (6-class) + stair edges</figcaption>
+        </figure>
+        <figure class="cam">
+          <img id="cam-depth" alt="Depth navigator stream">
+          <figcaption>Depth &mdash; Depth-Anything V2 navigator (RGB | depth columns)</figcaption>
+        </figure>
+        <figure class="cam">
+          <img id="cam-phone" alt="Phone camera stream">
+          <figcaption>Phone &mdash; qhackGPS scan camera (pushed over Wi&#8209;Fi while SCAN is on)</figcaption>
+        </figure>
+      </div>
+      <p class="hint">All three views run at the same time off one shared camera,
+        served by the <code>qhack-cam-streams</code> host service on port&nbsp;8080.
+        Click a view to open it full size.</p>
+    </section>
+
+    <section class="card">
+      <h2>Distance Modulino</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">module</th><td id="dist-status">&mdash;</td></tr>
+          <tr><th scope="row">last reading</th><td id="raw-mm">&mdash;</td></tr>
+          <tr><th scope="row">readings received</th><td id="raw-count">0</td></tr>
+          <tr><th scope="row">update rate</th><td id="raw-hz">&mdash;</td></tr>
+          <tr><th scope="row">last update age</th><td id="raw-age">&mdash;</td></tr>
+          <tr><th scope="row">presence threshold</th><td id="raw-thr">&mdash;</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Red lamp = object closer than the presence threshold. The sensor reports
+        nothing at all when no target is in range (&asymp; beyond ~1.2 m).</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Motors Modulino</h2>
+        <button id="btn-clear-graphs" class="btn btn-mini">Clear graphs</button>
+      </div>
+      <table>
+        <tbody>
+          <tr><th scope="row">module</th><td id="mot-status">&mdash;</td></tr>
+          <tr><th scope="row">commanded</th><td id="mot-cmd">stop</td></tr>
+          <tr><th scope="row">applied by sketch</th><td id="mot-applied">stop</td></tr>
+          <tr><th scope="row">wheel speed (1&ndash;5)</th><td id="mot-speed">&mdash;</td></tr>
+          <tr><th scope="row">current &middot; channel A (1A/2A)</th><td id="mot-ma-a">&mdash;</td></tr>
+          <tr><th scope="row">current &middot; channel B</th><td id="mot-ma-b">&mdash;</td></tr>
+          <tr><th scope="row">applied voltage (duty)</th><td id="mot-duty">&mdash;</td></tr>
+          <tr><th scope="row">driver busy</th><td id="mot-busy">&mdash;</td></tr>
+        </tbody>
+      </table>
+
+      <div class="chart" id="chart-ma-wrap">
+        <div class="chart-head">
+          <span class="chart-title">motor current &middot; channel A &middot; last 2 min</span>
+          <span id="chart-ma-now" class="chart-now">&mdash;</span>
+        </div>
+        <div class="chart-body">
+          <svg id="chart-ma" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Motor current history, channel A, milliamps"></svg>
+          <span id="chart-ma-max" class="chart-y chart-y-top"></span>
+          <span id="chart-ma-min" class="chart-y chart-y-bottom"></span>
+        </div>
+      </div>
+
+      <div class="chart" id="chart-duty-wrap">
+        <div class="chart-head">
+          <span class="chart-title">applied motor voltage &middot; last 2 min</span>
+          <span id="chart-duty-now" class="chart-now">&mdash;</span>
+        </div>
+        <div class="chart-body">
+          <svg id="chart-duty" viewBox="0 0 520 110" preserveAspectRatio="none" aria-label="Applied motor voltage history in volts"></svg>
+          <span id="chart-duty-max" class="chart-y chart-y-top"></span>
+          <span id="chart-duty-min" class="chart-y chart-y-bottom"></span>
+        </div>
+      </div>
+
+      <p class="hint">The motor sits across terminals 1A&nbsp;+&nbsp;2A (one half-bridge from each
+        channel, driven in opposite phase), so both channels show current while it spins.
+        The firmware reports current sense only &mdash; VM is not readable over I&sup2;C, so
+        applied voltage is computed as PWM duty &times; VM with VM = 5&nbsp;V (set in
+        <code>main.py</code> <code>MOTOR_VM_V</code>). Dashboard spin = full scale =
+        &plusmn;5&nbsp;V; the phone can pick speeds 1&ndash;5. Yellow VM LED = motor power
+        present.</p>
+    </section>
+
+    <section class="card">
+      <h2>Vibro Modulino</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">module</th><td id="vib-status">&mdash;</td></tr>
+          <tr><th scope="row">haptics</th><td id="vib-active">idle</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Buzzes in a 250&nbsp;ms&nbsp;/&nbsp;500&nbsp;ms rhythm while an object is inside
+        the presence threshold; the button above fires a one-shot buzz.</p>
+    </section>
+
+    <section class="card">
+      <h2>Bluetooth</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">QCane daemon (phone GATT)</th><td id="cane-daemon">&mdash;</td></tr>
+          <tr><th scope="row">NUS side channel</th><td id="bt-state">&mdash;</td></tr>
+          <tr><th scope="row">NUS device</th><td id="bt-device">&mdash;</td></tr>
+          <tr><th scope="row">last NUS message</th><td id="bt-msg">&mdash;</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">The phone app steers over the QCane GATT (via <code>qcane_btd</code> on the
+        host); the Nordic UART "Distance Watch" service runs alongside for nRF-style debugging.</p>
+    </section>
+
+    <section class="card">
+      <h2>Event log</h2>
+      <ol id="events" class="events"><li class="ev-empty">no events yet</li></ol>
+    </section>
+  </main>
+
+  <script src="libs/socket.io.min.js"></script>
+  <script src="libs/arduino.js"></script>
+  <script src="app.js"></script>
+  <script src="cams.js"></script>
+</body>
+</html>

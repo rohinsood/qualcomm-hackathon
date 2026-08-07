@@ -442,7 +442,34 @@
     <aside class="notes">Sharing the NPU throttled the language model 12→5 tok/s — hence the partition. The NPU won the SLM bench outright: 12.1 tok/s, 186 ms first token. Why the phone owns vision at all: the cane board's own CPU benched depth at 0.24–2.2 fps — an order of magnitude short. Int8 on that CPU was SLOWER than float (no accelerator to consume it) — quantization only pays on the Hexagon. Models sourced/compiled via Qualcomm AI Hub, profiled on-silicon over ADB with QUAD.</aside>
   </section>
 
-  <!-- 7 · THE MAP -->
+  <!-- 7b · THE MULTIVERSE -->
+  <section class="slide" data-alt="inside · multiverse">
+    <div class="stage split">
+      <div>
+        <p class="eyebrow r">Inside · the multiverse</p>
+        <h1 class="r" style="max-width:22ch; font-size:clamp(1.9rem,4.8vw,4.2rem);">Two chips. <span class="go">One system.</span></h1>
+        <div class="swap r d2" style="margin-top:1.6em; font-size:clamp(.78rem,1.4vw,1rem);">
+          <div style="margin-bottom:.8em; color:var(--dim); font-weight:700; letter-spacing:.12em; text-transform:uppercase; font-size:.75em;">Snapdragon 8 Elite · phone</div>
+          <div><span class="k">Depth-Anything-V2</span><span class="new">metric depth, metres</span><span class="arr">·</span><span class="old" style="text-decoration:none;">Adreno GPU · ~3 Hz</span></div>
+          <div><span class="k">FFNet / SegFormer</span><span class="new">walkability seg</span><span class="arr">·</span><span class="old" style="text-decoration:none;">Hexagon NPU</span></div>
+          <div><span class="k">YOLOv8n</span><span class="new">object detection</span><span class="arr">·</span><span class="old" style="text-decoration:none;">QNN · 1 Hz</span></div>
+          <div><span class="k">Qwen3.5-2B</span><span class="new">companion SLM</span><span class="arr">·</span><span class="old" style="text-decoration:none;">GenieX · NPU</span></div>
+          <div style="margin-top:1em; margin-bottom:.8em; color:var(--dim); font-weight:700; letter-spacing:.12em; text-transform:uppercase; font-size:.75em;">Dragonwing QRB2210 · cane board</div>
+          <div><span class="k">Places365 ResNet18</span><span class="new">terrain classification</span><span class="arr">·</span><span class="old" style="text-decoration:none;">CPU · 2.3 fps</span></div>
+          <div><span class="k">Stair-edge detector</span><span class="new">Canny + Hough</span><span class="arr">·</span><span class="old" style="text-decoration:none;">classical CV</span></div>
+          <div><span class="k">Depth-Anything-V2</span><span class="new">ground-cam navigator</span><span class="arr">·</span><span class="old" style="text-decoration:none;">CPU · 2.2 fps</span></div>
+        </div>
+        <p class="sub r d3" style="margin-top:1.2em;">The board <strong>classifies the ground</strong> and tells the phone which world it's in. The phone <strong>steers through that world</strong>. Each device does what its silicon is good at — and stairs override everything.</p>
+      </div>
+      <div class="r d3">
+        <p class="bignum" style="font-size:clamp(2.4rem,6vw,5rem);">8<small>models running concurrently across 2 Qualcomm SoCs</small></p>
+        <p class="sub" style="max-width:22ch; margin-top:1.2em;"><strong style="color:var(--dodge);">STAIRS</strong> detected on the board → wheel stops <strong>immediately</strong>, holds 3&nbsp;s. The one command that overrides the phone.</p>
+      </div>
+    </div>
+    <aside class="notes">The multiverse in practice: the phone's forward camera and the board's downward camera see different things and run different models optimised for their respective viewpoints. The board runs Places365 ResNet18 (MIT CSAIL, 365 scene categories aggregated into 6 terrain classes) at 435ms per frame on 4×A53 cores. When the terrain flips (sidewalk→indoor_floor), the phone automatically swaps its depth model (VKITTI→Hypersim) and nav strategy (routes→beeline). Stairs detection is safety-critical and gets a 3-second unconditional wheel hold — it's the only board-side action that overrides the phone's steering authority, because a staircase visible to the ground camera may not be visible to the forward camera until the user is at the edge.</aside>
+  </section>
+
+  <!-- 7c · THE MAP -->
   <section class="slide" data-alt="the next 60 m">
     <div class="stage split">
       <div>
