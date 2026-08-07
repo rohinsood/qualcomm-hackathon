@@ -22,6 +22,7 @@ constexpr unsigned long VIBRO_PULSE_MS = 250;
 constexpr unsigned long VIBRO_PERIOD_MS = 500;
 
 constexpr unsigned long MODULE_RETRY_MS = 3000;
+constexpr unsigned long TELEMETRY_MS = 500;
 
 bool sensorReady = false;
 bool motorsReady = false;
@@ -30,11 +31,13 @@ bool vibroReady = false;
 float lastMm = NAN;
 unsigned long lastStatusMs = 0;
 unsigned long lastRetryMs = 0;
+unsigned long lastTelemetryMs = 0;
 
 // Desired actuator state; written by Bridge handlers, applied in loop().
 volatile int desiredMotor = 0;  // -1 spin left, 0 stop, +1 spin right
 volatile bool desiredVibro = false;
 volatile unsigned long lastCommandMs = 0;
+volatile int pendingPulseMs = 0;  // one-shot manual buzz from the dashboard
 
 int appliedMotor = 0;
 bool vibroActive = false;
@@ -48,6 +51,16 @@ void onSetMotor(int dir) {
 void onSetVibro(int on) {
   desiredVibro = (on != 0);
   lastCommandMs = millis();
+}
+
+void onVibroPulse(int ms) {
+  if (ms < 50) {
+    ms = 50;
+  }
+  if (ms > 3000) {
+    ms = 3000;
+  }
+  pendingPulseMs = ms;
 }
 
 bool beginMotors() {
@@ -65,9 +78,10 @@ void setup() {
   Serial.begin(115200);
   Bridge.begin();
 
-  // Commands pushed by the Linux side (sourced from the phone over BLE)
+  // Commands pushed by the Linux side (phone over BLE, or dashboard buttons)
   Bridge.provide("set_motor", onSetMotor);
   Bridge.provide("set_vibro", onSetVibro);
+  Bridge.provide("vibro_pulse", onVibroPulse);
 
   // Initialize Modulino I2C communication (Qwiic connector is on Wire1)
   Modulino.begin(Wire1);
@@ -144,6 +158,32 @@ void loop() {
     } else if (vibroActive) {
       vibro.off();
       vibroActive = false;
+    }
+
+    // One-shot manual buzz requested from the dashboard
+    int pulse = pendingPulseMs;
+    if (pulse > 0) {
+      pendingPulseMs = 0;
+      vibro.on((size_t)pulse);
+      Serial.print("manual vibro pulse ms: ");
+      Serial.println(pulse);
+    }
+  } else {
+    pendingPulseMs = 0;  // drop manual requests while the module is missing
+  }
+
+  // 2 Hz motor telemetry for the dashboard: current sense per channel (mA),
+  // what the sketch is actually applying, and the driver busy flag. The
+  // firmware does not report VM voltage, so current is the electrical truth.
+  if (motorsReady && (now - lastTelemetryMs >= TELEMETRY_MS)) {
+    lastTelemetryMs = now;
+    if (motors.update()) {
+      Bridge.notify("motor_telemetry",
+                    motors.sensedCurrentA(),
+                    motors.sensedCurrentB(),
+                    appliedMotor,
+                    vibroActive ? 1 : 0,
+                    motors.busy() ? 1 : 0);
     }
   }
 

@@ -11,8 +11,13 @@ connector).
   haptic obstacle alert straight on the cane.
 - **Steering motor** on the Modulino Motors spins **left/right on phone
   command** over BLE, and stops on `clear`/`stop` or when the phone drops.
-- Live **distance readout** (mm / cm) plus the raw data the sensor returns:
-  last reading, reading count, update rate, reading age, sensor status.
+- **QCane Link dashboard** (port 7000): per-Modulino informatics cards —
+  distance readings (mm/cm, rate, age), motor module telemetry (sensed
+  current per channel in mA, commanded vs applied direction, busy flag),
+  vibro state, Bluetooth link state, and a rolling event log — plus **manual
+  controls**: spin left / stop / spin right buttons and a one-shot vibro
+  buzz. (VM voltage is not readable from the module firmware; the yellow VM
+  LED means motor power is present.)
 - **Two-way Bluetooth**: a phone receives live distance + obstruction
   notifications and can write back (steer the motor, set the threshold, or
   send a message that appears on the web page).
@@ -145,6 +150,13 @@ Presence threshold and staleness live at the top of
 `distance-watch/python/main.py` (`PRESENCE_MAX_MM`, `STALE_AFTER_S`) — and the
 threshold can be changed live from the phone (write a number) or via
 `curl -X POST localhost:7000/api/threshold -H 'Content-Type: application/json' -d '{"mm":250}'`.
+
+Dashboard control endpoints (what the buttons call):
+
+```bash
+curl -X POST localhost:7000/api/motor -H 'Content-Type: application/json' -d '{"dir":-1}'  # -1 left, 0 stop, 1 right
+curl -X POST localhost:7000/api/vibro -H 'Content-Type: application/json' -d '{"ms":600}'  # one-shot buzz, 50–3000 ms
+```
 
 Actuator behavior lives at the top of `distance-watch/sketch/sketch.ino`:
 `MOTOR_SPEED_PCT` (steering spin speed, default 60 %), `VIBRO_PULSE_MS` /
