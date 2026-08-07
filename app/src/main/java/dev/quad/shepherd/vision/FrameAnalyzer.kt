@@ -12,6 +12,7 @@ import dev.quad.shepherd.guidance.DistanceEstimator
 import dev.quad.shepherd.guidance.GuidanceEngine
 import dev.quad.shepherd.path.PathPipeline
 import dev.quad.shepherd.path.PolarPlanner
+import dev.quad.shepherd.path.WalkableColumns
 import java.nio.FloatBuffer
 
 /** One processed camera frame: detections in camera-frame pixel space. */
@@ -165,6 +166,11 @@ class FrameAnalyzer(
             // ---- v2: fold this depth frame into the traversability grid
             path?.let { p ->
                 val seg = segEngine?.segment(upright)
+                if (seg != null) {
+                    p.segClearance = WalkableColumns.clearance(
+                        seg, SegEngine.OUT_W, SegEngine.OUT_H, SegEngine.WALKABLE_CLASSES,
+                    )
+                }
                 p.updateGrid(
                     metricDepth(depth),
                     depth.size,

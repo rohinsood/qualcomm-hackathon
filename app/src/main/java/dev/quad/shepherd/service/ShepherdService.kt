@@ -141,6 +141,8 @@ class ShepherdService : LifecycleService() {
             if (g > 1f) {
                 // Rear camera looks along -Z; pitch-down = asin(gz/|g|)
                 pathPipeline.pitchRad = asin((gz / g).coerceIn(-1f, 1f))
+                // Roll about the optical axis (0 = upright portrait)
+                pathPipeline.rollRad = kotlin.math.atan2(gx, gy)
             }
         }
 
@@ -187,13 +189,24 @@ class ShepherdService : LifecycleService() {
         uiListener = listener
     }
 
+    @Volatile private var attachedSurface: Preview.SurfaceProvider? = null
+
     /** Route the activity's PreviewView into the service-owned camera. */
     fun attachPreview(surfaceProvider: Preview.SurfaceProvider) {
+        attachedSurface = surfaceProvider
         preview?.setSurfaceProvider(surfaceProvider)
     }
 
-    fun detachPreview() {
-        preview?.setSurfaceProvider(null)
+    /**
+     * Identity-checked: on activity recreation the OLD instance's teardown
+     * runs after the NEW one attached — a blind detach here blanked the
+     * fresh preview ("can't see the camera sometimes").
+     */
+    fun detachPreview(surfaceProvider: Preview.SurfaceProvider) {
+        if (attachedSurface === surfaceProvider) {
+            attachedSurface = null
+            preview?.setSurfaceProvider(null)
+        }
     }
 
     fun setDepthDebug(enabled: Boolean) {
@@ -258,6 +271,8 @@ class ShepherdService : LifecycleService() {
             provider.bindToLifecycle(
                 this, CameraSelector.DEFAULT_BACK_CAMERA, previewUseCase, analysis
             )
+            // The activity may have attached before the camera was bound
+            attachedSurface?.let { previewUseCase.setSurfaceProvider(it) }
         }, ContextCompat.getMainExecutor(this))
     }
 

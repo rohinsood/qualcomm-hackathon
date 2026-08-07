@@ -64,7 +64,16 @@ class PolarPlanner(
     private val blocked = BooleanArray(sectors)
     private var committedAngle = 0f
 
-    fun plan(grid: TraversabilityGrid, goalAngleDeg: Float?): Plan {
+    /**
+     * @param segClearance optional image-space walkable-fraction columns
+     *   (Wayfinder signal) spanning [segFovDeg]; arbitrates STOP.
+     */
+    fun plan(
+        grid: TraversabilityGrid,
+        goalAngleDeg: Float?,
+        segClearance: FloatArray? = null,
+        segFovDeg: Float = 70f,
+    ): Plan {
         // 1) Free distance per sector
         val free = FloatArray(sectors)
         for (s in 0 until sectors) free[s] = raycast(grid, sectorAngle(s))
@@ -120,8 +129,33 @@ class PolarPlanner(
             }
         }
 
-        // 6) No valley at all: stop.
+        // 6) No geometric valley. Before stopping, consult the image-space
+        // walkable-fraction columns (projection-free): if segmentation sees
+        // a clearly open direction, the grid verdict is likely a projection
+        // artifact — steer there cautiously instead of freezing.
         if (bestAngle == null) {
+            segClearance?.let { seg ->
+                var bestC = -1
+                var bestFrac = 0.55f // must be clearly open
+                for (c in seg.indices) {
+                    if (seg[c] > bestFrac) {
+                        bestFrac = seg[c]
+                        bestC = c
+                    }
+                }
+                if (bestC >= 0) {
+                    val angle = (bestC.toFloat() / (seg.size - 1) - 0.5f) * segFovDeg
+                    committedAngle += COMMIT_ALPHA * (angle - committedAngle)
+                    val g = GuidanceEngine.Guidance(
+                        severity = GuidanceEngine.Severity.CAUTION,
+                        steer = (committedAngle / STEER_FULL_DEG).coerceIn(-1f, 1f),
+                        nearestDistanceMeters = nearest,
+                        nearestLabel = "obstacle",
+                        columnThreat = threatColumns(sm),
+                    )
+                    return Plan(g, committedAngle, stop = false, sectorFreeM = sm)
+                }
+            }
             committedAngle = 0f
             val g = GuidanceEngine.Guidance(
                 severity = GuidanceEngine.Severity.DANGER,

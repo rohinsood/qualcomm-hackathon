@@ -234,7 +234,7 @@ class MainActivity : AppCompatActivity() {
         binding.mapView.onStop()
         service?.let {
             it.setUiListener(null)
-            it.detachPreview()
+            it.detachPreview(binding.previewView.surfaceProvider)
         }
         super.onStop()
     }
