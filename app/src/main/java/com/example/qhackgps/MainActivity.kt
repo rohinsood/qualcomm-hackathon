@@ -417,15 +417,21 @@ fun NavigatorScreen() {
                 if (update.obstaclePresent) {
                     val meters = update.obstacleMm.takeIf { it > 0 }
                         ?.let { String.format(Locale.US, ", %.1f meters", it / 1000f) } ?: ""
+                    // Name the turn the cane is about to make (AVOID LEFT/RIGHT
+                    // goes to the wheel in the same breath) — every turn is
+                    // spoken, obstacle dodges most of all.
                     val dodge = when (update.direction) {
-                        TurnDirection.LEFT -> " Step left."
-                        TurnDirection.RIGHT -> " Step right."
+                        TurnDirection.LEFT -> " Turning left."
+                        TurnDirection.RIGHT -> " Turning right."
                         else -> ""
                     }
                     speech.announce("Stop. Obstacle ahead$meters.$dodge",
                         interrupt = true, urgent = true)
                 } else {
                     speech.announce("Path clear.")
+                    // Force the next route direction to be spoken, so the user
+                    // always hears what to do right after a dodge ends.
+                    lastSpokenDir = TurnDirection.NONE
                 }
                 return@collect
             }
@@ -468,6 +474,14 @@ fun NavigatorScreen() {
                 speech.announce(if (connected) "Cane connected." else "Cane disconnected.")
             }
             prevConnected = connected
+        }
+    }
+
+    // Board-side dashboard buttons, read aloud: the board sends {"say": ...}
+    // over the cane link whenever someone presses spin/stop/buzz on :7000.
+    LaunchedEffect(Unit) {
+        caneLink.say.collect { line ->
+            if (line != null) speech.announce(line.text)
         }
     }
 

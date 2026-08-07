@@ -40,14 +40,15 @@ right           RIGHT           r           turn_right      turn-right
 stop            STOP            s           halt            brake
 ```
 
-An optional speed of `1`–`5` (default `3`) may follow, separated by `:`, `=`,
-`,` or a space. JSON works too:
+An optional speed of `1`–`5` may follow, separated by `:`, `=`, `,` or a
+space — it is accepted for compatibility and **ignored**: every spin runs
+at full scale (100 % duty). JSON works too:
 
 ```
 left            left:5          left 5          {"action":"left","speed":5}
 ```
 
-Out-of-range speeds are clamped; unknown words are rejected and logged.
+Unknown words are rejected and logged.
 
 ### Option A — BLE GATT (no pairing needed)
 
@@ -225,9 +226,9 @@ motors.setDcSpeedRaw(-raw, +raw);   // the other
 This also works unchanged if the motor is moved onto a single channel's pair
 (1A/1B), so it is a safe default either way.
 
-To change the feel, edit `SPEED_PERCENT` in `sketch/sketch.ino` — speeds 1..5
-map to 30/45/60/80/100 % of full scale. If left and right come out swapped,
-flip the sign in `driveMotor()`.
+There is no speed table any more — every spin is pinned to 100 % duty in the
+sketch (speed arguments on the wire are ignored). If left and right come out
+swapped, flip the sign in `applyMotor()`.
 
 `driveMotor()` is called from `loop()` on every change, never from the Bridge
 handler: that runs mid-RPC on the bridge thread, where blocking, I²C traffic

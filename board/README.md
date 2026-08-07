@@ -81,8 +81,9 @@ service and exposes a standard **Nordic UART Service** peripheral named
 | TX — board **notifies** | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
 
 **Board → phone** (subscribe to TX): `{"mm":123,"p":1}` — latest distance
-and whether an obstruction is inside the threshold; `"mm":null` when nothing
-is in range.
+and whether an obstruction is inside the threshold (`"mm":null` when nothing
+is in range); `{"say":"..."}` — a line for the phone to read aloud over TTS,
+sent whenever a dashboard button (spin/stop/buzz) is pressed.
 
 **Phone → board** (write UTF-8 text to RX):
 
@@ -103,17 +104,14 @@ bends (a 90° corner starts the wheel turning the moment guidance calls it),
 `CLEAR` when aligned — all of which physically drive the wheel. The wheel
 also stops when the phone disconnects or the bridge dies.
 
-## Deterministic on-board avoidance (no phone needed)
+## Steering authority: the phone, only the phone
 
-While **no phone is connected** over BLE, the board runs its own avoidance
-state machine: the moment an obstacle enters the threshold it turns the
-wheel away (`AUTO_AVOID_DIR`, default right, full speed); when the path
-clears it counter-turns for 60 % of the avoid time (clamped 0.5–4 s) to
-rejoin the original line, then stops. Every step is logged to the dashboard
-event feed, `auto_steer` in `/api/state` shows the phase, and any real
-command (phone or dashboard) cancels the maneuver instantly. A connected
-qhackGPS suppresses it entirely — the phone owns the dodge, since it knows
-the route.
+The board never decides a turn on its own. An obstacle is only *sensed*
+here — it streams to the phone as `{"mm","p"}` — and qhackGPS makes the
+call, answering with `AVOID`/`TURN`/`CLEAR` texts that drive the wheel
+(and speaking every turn it commands). With no phone connected the board
+buzzes the vibro but the wheel stays put; dashboard buttons still work,
+and the 2 s failsafe still stops everything if the link dies.
 
 Service install (first time on a board; fix the path in the unit to match
 where this repo lives):
