@@ -58,7 +58,9 @@ AGENT_PATH = "/qcane/agent"
 GATT_CHRC_IFACE = "org.bluez.GattCharacteristic1"
 PROPS_IFACE = "org.freedesktop.DBus.Properties"
 
-DEFAULT_SPEED = 3
+# Full scale: bare letters from the phone (v3 sends no speed suffix) must
+# still drive the wheel hard enough to feel through a cane grip.
+DEFAULT_SPEED = 5
 MIN_SPEED, MAX_SPEED = 1, 5
 MAX_LINE = 4096
 
