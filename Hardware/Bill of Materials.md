@@ -43,7 +43,9 @@ should work; QNN degrades gracefully if the config doesn't match.
 
 ## 3D-printed parts — designed, print-ready
 
-All models are in [`CAD/`](CAD/) as STL, with renders. Six printed assemblies:
+All models are in [`CAD/`](CAD/) as STL, with renders. The editable source is a
+live Onshape document — [open it here](https://cad.onshape.com/documents/c0b905e8d1b94a52d9e9ca97/w/f6521fb190a4be4abaa604ca/e/e523a5a009f76747b4bb6591)
+— and the committed STLs are exports of it. Six printed assemblies:
 
 | # | Part | STL | Purpose |
 |---|---|---|---|

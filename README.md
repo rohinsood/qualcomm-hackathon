@@ -170,6 +170,11 @@ continuously on a battery.
   mount error corrects itself instead of reading the floor as a wall.
 - **Near-field tip sensing** — a time-of-flight sensor catches what the camera
   can't see and triggers a stop.
+- **Spoken screen-thirds guidance** — an independent, cheap fallback path: the
+  middle third of the frame decides whether you can proceed, the better outer
+  third becomes the dodge side, and the side latches until the middle clears. It
+  reuses detections and column data the pipeline already computes — no grid, no
+  planner — and speaks "left" / "right" / "stop" / "straight" on each change.
 - **On-device speech** — neural TTS for alerts; recognition never leaves the phone.
 - **Optional offline companion** — a 2B-parameter language model on the NPU
   answers questions about the scene. Off by default; see [Roadmap](#roadmap).
@@ -388,6 +393,11 @@ Six assemblies, all in [`Hardware/CAD/`](Hardware/CAD/):
 Print settings, materials, and the roller-clearance caveat:
 [`Hardware/CAD/README.md`](Hardware/CAD/README.md)
 
+**Editable CAD (Onshape):**
+[open the live document](https://cad.onshape.com/documents/c0b905e8d1b94a52d9e9ca97/w/f6521fb190a4be4abaa604ca/e/e523a5a009f76747b4bb6591)
+— the source of truth for modifications. The committed STLs are exports of it, so
+the repo stands alone without an Onshape account.
+
 > **Not yet printed.** The models are complete and print-ready but have not been
 > printed and fit-checked. Expect a clearance iteration on the wheel.
 
@@ -471,7 +481,7 @@ anyway. `local.properties` is gitignored.
 **3 — Build and test**
 
 ```bash
-./gradlew :app:testDebugUnitTest     # 9 test classes, no device required
+./gradlew :app:testDebugUnitTest     # 10 test classes, no device required
 ./gradlew :app:assembleDebug
 ./gradlew :app:installDebug
 ```

@@ -65,7 +65,7 @@ enable **Maps SDK for Android**, **Routes API**, **Geocoding API**, and
 ## 4 — Build and test
 
 ```bash
-./gradlew :app:testDebugUnitTest     # 9 test classes, no device needed
+./gradlew :app:testDebugUnitTest     # 10 test classes, no device needed
 ./gradlew :app:assembleDebug
 ./gradlew :app:installDebug          # or hit Run in Android Studio
 ```

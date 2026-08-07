@@ -103,6 +103,9 @@ Protocol reference: [`../docs/BOARD.md`](../docs/BOARD.md)
 ## Stage 2 — Print the parts
 
 All STLs are in [`CAD/`](CAD/). Six assemblies, ~400–550 g of filament total.
+The editable source is a live Onshape document —
+[open it here](https://cad.onshape.com/documents/c0b905e8d1b94a52d9e9ca97/w/f6521fb190a4be4abaa604ca/e/e523a5a009f76747b4bb6591)
+— if you need to change a dimension before printing.
 
 | Part | File | Notes |
 |---|---|---|

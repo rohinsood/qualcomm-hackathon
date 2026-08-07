@@ -3,6 +3,14 @@
 Six print-ready assemblies for the Lighthouse cane. All parts are original to
 this project except the omni wheel, whose provenance is noted below.
 
+**Live CAD (Onshape):**
+<https://cad.onshape.com/documents/c0b905e8d1b94a52d9e9ca97/w/f6521fb190a4be4abaa604ca/e/e523a5a009f76747b4bb6591>
+
+The Onshape document is the editable source of truth — open it to modify
+dimensions, adapt the phone mount to another device, or export a different
+format. The STLs here are exports of it, committed so the repository stands on
+its own without an Onshape account.
+
 ![Full assembly](Assembly.png)
 
 ## Parts
@@ -75,10 +83,12 @@ fallback is deliberate.
 
 ## Source files
 
-Only STLs are committed. If you have the editable models (Fusion / STEP), adding
-them under `source/` would let others modify rather than remesh — particularly
-for adapting the phone mount to other devices, which is the most likely change
-anyone will want to make.
+The editable models live in the **Onshape document linked at the top of this
+file** — that is the place to make changes. The STLs committed here are exports,
+kept in-repo so the build is reproducible without an Onshape account.
+
+Adapting the phone mount to a device other than the S25 Ultra is the most likely
+modification anyone will want; the Onshape document is where to do it.
 
 ## Reference
 
