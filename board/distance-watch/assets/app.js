@@ -75,6 +75,7 @@ const WINDOW_S = 120;
 const history = [];     // [{t, ma, duty}] — seeded from the server, then live
 let lastMotorT = null;
 let seeded = false;
+let graphEpoch = null;  // server bumps this on "clear graphs"
 
 const charts = {
   ma: {
@@ -202,6 +203,14 @@ function render(d) {
   btnStop.setAttribute('aria-pressed', String(d.motor === 0));
   btnRight.setAttribute('aria-pressed', String(d.motor === 1));
 
+  // Graphs cleared server-side: drop the local buffer and start fresh
+  if (graphEpoch !== null && d.graph_epoch !== undefined && d.graph_epoch !== graphEpoch) {
+    history.length = 0;
+    lastMotorT = null;
+    drawCharts();
+  }
+  if (d.graph_epoch !== undefined) graphEpoch = d.graph_epoch;
+
   // Graphs: seed once from server history, then append fresh samples
   if (!seeded && Array.isArray(d.motor_history)) {
     for (const p of d.motor_history) pushSample(p.t, p.ma, p.duty);
@@ -260,6 +269,7 @@ btnLeft.addEventListener('click', () => post('/api/motor', { dir: -1 }));
 btnStop.addEventListener('click', () => post('/api/motor', { dir: 0 }));
 btnRight.addEventListener('click', () => post('/api/motor', { dir: 1 }));
 btnBuzz.addEventListener('click', () => post('/api/vibro', { ms: 600 }));
+$('btn-clear-graphs').addEventListener('click', () => post('/api/graphs/clear', {}));
 
 ui.on_connect(() => {
   conn.textContent = 'Live';
