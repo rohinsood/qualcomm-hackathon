@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Distance Watch</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>&#128207; Distance Watch</h1>
+      <span id="conn" class="pill">Connecting&hellip;</span>
+    </header>
+
+    <section class="lamp-wrap">
+      <div id="lamp" class="lamp" role="status">
+        <span id="lamp-label">NO OBJECT</span>
+      </div>
+    </section>
+
+    <section class="stat">
+      <div class="stat-label">Distance to object</div>
+      <div class="stat-value"><span id="mm">&mdash;</span><span class="unit">mm</span></div>
+      <div id="sub" class="stat-sub">waiting for data&hellip;</div>
+    </section>
+
+    <section id="phone-card" class="phone hidden">
+      <div class="phone-label">Message from phone</div>
+      <div id="phone-msg" class="phone-msg"></div>
+    </section>
+
+    <section class="raw">
+      <h2>Raw sensor data</h2>
+      <table>
+        <tbody>
+          <tr><th scope="row">last reading (mm)</th><td id="raw-mm">&mdash;</td></tr>
+          <tr><th scope="row">readings received</th><td id="raw-count">0</td></tr>
+          <tr><th scope="row">update rate</th><td id="raw-hz">&mdash;</td></tr>
+          <tr><th scope="row">last update age</th><td id="raw-age">&mdash;</td></tr>
+          <tr><th scope="row">sensor</th><td id="raw-sensor">&mdash;</td></tr>
+          <tr><th scope="row">presence threshold</th><td id="raw-thr">&mdash;</td></tr>
+          <tr><th scope="row">bluetooth</th><td id="raw-bt">&mdash;</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Red lamp = object closer than the presence threshold. The sensor reports
+        nothing at all when no target is in range (&asymp; beyond ~1.2 m).</p>
+    </section>
+  </main>
+
+  <script src="libs/socket.io.min.js"></script>
+  <script src="libs/arduino.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
