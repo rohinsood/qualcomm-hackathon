@@ -66,6 +66,7 @@
           <tr><th scope="row">module</th><td id="mot-status">&mdash;</td></tr>
           <tr><th scope="row">commanded</th><td id="mot-cmd">stop</td></tr>
           <tr><th scope="row">applied by sketch</th><td id="mot-applied">stop</td></tr>
+          <tr><th scope="row">wheel speed (1&ndash;5)</th><td id="mot-speed">&mdash;</td></tr>
           <tr><th scope="row">current &middot; channel A (1A/2A)</th><td id="mot-ma-a">&mdash;</td></tr>
           <tr><th scope="row">current &middot; channel B</th><td id="mot-ma-b">&mdash;</td></tr>
           <tr><th scope="row">applied voltage (duty)</th><td id="mot-duty">&mdash;</td></tr>
@@ -97,11 +98,13 @@
         </div>
       </div>
 
-      <p class="hint">The module firmware reports current sense only &mdash; VM is not readable
-        over I&sup2;C, so applied voltage is computed as PWM duty &times; VM with VM = 5&nbsp;V
-        (the supply wired to the terminals; set in <code>main.py</code> <code>MOTOR_VM_V</code>).
-        Full spin drives &plusmn;100&nbsp;% duty = &plusmn;5&nbsp;V. Yellow VM LED on the module =
-        motor power present.</p>
+      <p class="hint">The motor sits across terminals 1A&nbsp;+&nbsp;2A (one half-bridge from each
+        channel, driven in opposite phase), so both channels show current while it spins.
+        The firmware reports current sense only &mdash; VM is not readable over I&sup2;C, so
+        applied voltage is computed as PWM duty &times; VM with VM = 5&nbsp;V (set in
+        <code>main.py</code> <code>MOTOR_VM_V</code>). Dashboard spin = full scale =
+        &plusmn;5&nbsp;V; the phone can pick speeds 1&ndash;5. Yellow VM LED = motor power
+        present.</p>
     </section>
 
     <section class="card">
@@ -120,11 +123,14 @@
       <h2>Bluetooth</h2>
       <table>
         <tbody>
-          <tr><th scope="row">link</th><td id="bt-state">&mdash;</td></tr>
-          <tr><th scope="row">device</th><td id="bt-device">&mdash;</td></tr>
-          <tr><th scope="row">last message from phone</th><td id="bt-msg">&mdash;</td></tr>
+          <tr><th scope="row">QCane daemon (phone GATT)</th><td id="cane-daemon">&mdash;</td></tr>
+          <tr><th scope="row">NUS side channel</th><td id="bt-state">&mdash;</td></tr>
+          <tr><th scope="row">NUS device</th><td id="bt-device">&mdash;</td></tr>
+          <tr><th scope="row">last NUS message</th><td id="bt-msg">&mdash;</td></tr>
         </tbody>
       </table>
+      <p class="hint">The phone app steers over the QCane GATT (via <code>qcane_btd</code> on the
+        host); the Nordic UART "Distance Watch" service runs alongside for nRF-style debugging.</p>
     </section>
 
     <section class="card">

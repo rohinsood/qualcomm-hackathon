@@ -1,16 +1,26 @@
 /*
- * qcane-wheel — MCU side.
+ * qcane-wheel — MCU side (merged: wheel + distance + vibro).
  *
- * Spins a wheel on a Modulino Motors board (MAX22211 dual H-bridge, on Qwiic /
- * Wire1 at I2C 0x48). Direction and speed arrive from the Linux side over the
- * Router Bridge via the "set_wheel" method. The 13x8 LED matrix mirrors what
- * the motor is doing, as a status display.
+ * One sketch for the whole Modulino chain on the Qwiic bus (Wire1):
+ *   UNO Q -> Modulino Motors -> Modulino Vibro -> Modulino Distance
+ *
+ * - Wheel: dir/speed arrive from the Linux side via "set_wheel" (phone over
+ *   the QCane GATT, or the dashboard buttons). The 13x8 LED matrix mirrors
+ *   what the motor is doing.
+ * - Distance: every valid ToF measurement streams up as "distance_reading".
+ * - Vibro: pulses in a rhythm while the Linux side holds "set_vibro" on
+ *   (object inside the presence threshold); "vibro_pulse" fires one manual
+ *   buzz from the dashboard.
+ * - Failsafe: the Linux side re-sends the desired state 4x/s; if that stream
+ *   stops for 2 s (app or bridge died), the wheel stops and the vibro goes
+ *   quiet rather than run away.
  *
  * Wiring: the motor sits across terminals 1A and 2A, which is one half-bridge
  * from channel A and one from channel B rather than a single channel's own
  * pair, so the two channels have to be driven in opposite phase — see
  * driveMotor(). "motor_selftest" re-measures every option if that ever needs
- * checking again.
+ * checking again (streams "selftest_telemetry"; the periodic dashboard
+ * stream is "motor_telemetry").
  */
 
 #include <Arduino_LED_Matrix.h>
@@ -18,14 +28,25 @@
 #include <Arduino_RouterBridge.h>
 
 Arduino_LED_Matrix matrix;
-ModulinoMotors motors;
-
-// True once the Modulino has answered on the Qwiic bus.
-static bool motorReady = false;
+ModulinoDistance distance;  // VL53L4CD/VL53L4ED time-of-flight sensor
+ModulinoMotors motors;      // MAX22211 dual H-bridge; motor across 1A <-> 2A
+ModulinoVibro vibro;        // haptic vibration motor
 
 // Wheel speed 1..5 as a percentage of full scale. Starts high enough that a
 // loaded motor actually turns instead of just buzzing.
 static const uint8_t SPEED_PERCENT[5] = {30, 45, 60, 80, 100};
+
+// The Linux side re-sends the desired actuator state 4x/s; if that stream
+// stops (app or bridge died), stop every output rather than run away.
+constexpr unsigned long COMMAND_TIMEOUT_MS = 2000;
+
+// Proximity alert rhythm: a VIBRO_PULSE_MS buzz every VIBRO_PERIOD_MS.
+constexpr unsigned long VIBRO_PULSE_MS = 250;
+constexpr unsigned long VIBRO_PERIOD_MS = 500;
+
+constexpr unsigned long MODULE_RETRY_MS = 3000;
+constexpr unsigned long TELEMETRY_MS = 500;
+constexpr unsigned long DISTANCE_POLL_MS = 20;
 
 static const uint8_t MATRIX_W = 13;
 static const uint8_t MATRIX_H = 8;
@@ -45,11 +66,19 @@ static const uint8_t RING_COL[RING_LEN] = {
 static const uint8_t COMET[] = {7, 5, 3, 1};
 static const uint8_t COMET_LEN = sizeof(COMET);
 
+// Module presence on the Qwiic bus (all three retried every 3 s).
+static bool motorReady = false;
+static bool sensorReady = false;
+static bool vibroReady = false;
+
 // Bridge handlers run on the bridge thread, loop() reads them — keep volatile.
 volatile int wheelDir = 0;    // -1 = left, 0 = stopped, +1 = right
-volatile int wheelSpeed = 3;  // 1 (slowest) .. 5 (fastest)
+volatile int wheelSpeed = 5;  // 1 (slowest) .. 5 (full scale)
 volatile bool dirty = true;
-volatile int selftestPercent = 0;  // > 0 asks loop() to run the self-test
+volatile int selftestPercent = 0;   // > 0 asks loop() to run the self-test
+volatile bool desiredVibro = false;
+volatile int pendingPulseMs = 0;    // one-shot manual buzz from the dashboard
+volatile unsigned long lastCommandMs = 0;
 
 static uint8_t frame[MATRIX_PIXELS];
 static int head = 0;
@@ -59,6 +88,14 @@ static unsigned long lastStep = 0;
 // Seeded to an impossible value so the current state is reported once at boot.
 static int appliedDir = -99;
 static int appliedSpeed = -99;
+
+static bool vibroActive = false;
+static unsigned long lastPulseMs = 0;
+static unsigned long lastRetryMs = 0;
+static unsigned long lastTelemetryMs = 0;
+static unsigned long lastStatusMs = 0;
+static unsigned long lastDistancePollMs = 0;
+static float lastMm = NAN;
 
 static inline void px(uint8_t row, uint8_t col, uint8_t level) {
   if (row < MATRIX_H && col < MATRIX_W) {
@@ -80,7 +117,7 @@ static uint16_t stepIntervalMs(int speed) {
 static void renderWheel() {
   memset(frame, 0, sizeof(frame));
 
-  int dir = wheelDir;
+  int dir = (appliedDir == -99) ? 0 : appliedDir;
 
   // Faint rim, so the wheel stays visible even when stopped.
   for (uint8_t i = 0; i < RING_LEN; i++) {
@@ -119,6 +156,14 @@ static int16_t rawForSpeed(int speed) {
   return (int16_t)((int32_t)percent * ModulinoMotors::MAX_SPEED / 100);
 }
 
+// Signed duty percentage the H-bridge applies for the current wheel state.
+static int appliedDutyPct() {
+  if (appliedDir == -99 || appliedDir == 0 || appliedSpeed < 1) {
+    return 0;
+  }
+  return appliedDir * SPEED_PERCENT[constrain(appliedSpeed, 1, 5) - 1];
+}
+
 // Drive the wheel. Called from loop() once per command, not per animation
 // frame, so the I2C traffic stays proportional to commands rather than frames.
 static void driveMotor(int dir, int speed) {
@@ -154,7 +199,7 @@ static void reportCurrent(const char* stage) {
     mode = motors.stepperModeEnabled() ? "stepper" : "dc";
     busy = motors.busy();
   }
-  Bridge.notify("motor_telemetry", String(stage), milliampsA, milliampsB,
+  Bridge.notify("selftest_telemetry", String(stage), milliampsA, milliampsB,
                 mode, busy);
 }
 
@@ -162,7 +207,8 @@ static void reportCurrent(const char* stage) {
 // each one draws. Runs from loop(), so it is free to block.
 static void runSelftest(int percent) {
   if (!motorReady) {
-    Bridge.notify("motor_telemetry", String("no modulino found"), -1.0f, -1.0f);
+    Bridge.notify("selftest_telemetry", String("no modulino found"),
+                  -1.0f, -1.0f, String("?"), false);
     return;
   }
 
@@ -189,7 +235,20 @@ static void runSelftest(int percent) {
   motors.setHalfFullScaleEnabled(false);
 
   // Put the wheel back where the app last left it.
-  driveMotor(appliedDir, appliedSpeed);
+  driveMotor(appliedDir == -99 ? 0 : appliedDir, appliedSpeed < 1 ? 5 : appliedSpeed);
+}
+
+static bool beginMotors() {
+  if (!motors.begin()) {
+    return false;
+  }
+  motors.setStepperModeEnabled(false);  // DC, not stepper
+  motors.setDecay(ModulinoMotors::DecayMode::SLOW);
+  motors.stop();
+  // Force the next loop() pass to re-apply and re-report the wheel state.
+  appliedDir = -99;
+  appliedSpeed = -99;
+  return true;
 }
 
 // Called from Python: Bridge.call("set_wheel", dir, speed).
@@ -199,9 +258,24 @@ static void runSelftest(int percent) {
 // back over the same bridge) and driving hardware would stall the request —
 // both are handled from loop() instead.
 void set_wheel(int dir, int speed) {
-  wheelDir = (dir > 0) ? 1 : ((dir < 0) ? -1 : 0);
-  wheelSpeed = constrain(speed, 1, 5);
-  dirty = true;
+  int d = (dir > 0) ? 1 : ((dir < 0) ? -1 : 0);
+  int s = constrain(speed, 1, 5);
+  // The Linux side re-sends this 4x/s as a heartbeat; only redraw on change.
+  if (d != wheelDir || s != wheelSpeed) {
+    dirty = true;
+  }
+  wheelDir = d;
+  wheelSpeed = s;
+  lastCommandMs = millis();
+}
+
+void set_vibro(int on) {
+  desiredVibro = (on != 0);
+  lastCommandMs = millis();
+}
+
+void vibro_pulse(int ms) {
+  pendingPulseMs = constrain(ms, 50, 3000);
 }
 
 // Called from Python: Bridge.call("motor_selftest", percent). Same rule as
@@ -215,24 +289,27 @@ void setup() {
   matrix.setGrayscaleBits(3);  // 8 brightness levels (0..7)
   matrix.clear();
 
-  // Qwiic bus. On UNO Q, Modulino.begin() defaults to Wire1.
-  Modulino.begin();
-  motorReady = motors.begin();
-  if (motorReady) {
-    motors.setStepperModeEnabled(false);  // DC, not stepper
-    motors.setDecay(ModulinoMotors::DecayMode::SLOW);
-    motors.stop();
-  }
+  // Initialize Modulino I2C communication (Qwiic connector is on Wire1)
+  Modulino.begin(Wire1);
+  motorReady = beginMotors();
+  sensorReady = distance.begin();
+  vibroReady = vibro.begin();
 
   Bridge.begin();
   Monitor.begin();
 
   bool ok = Bridge.provide("set_wheel", set_wheel);
+  ok = Bridge.provide("set_vibro", set_vibro) && ok;
+  ok = Bridge.provide("vibro_pulse", vibro_pulse) && ok;
   ok = Bridge.provide("motor_selftest", motor_selftest) && ok;
   Monitor.print("[qcane-wheel] sketch ready, bridge=");
   Monitor.print(ok ? "yes" : "no");
-  Monitor.print(" modulino=");
-  Monitor.println(motorReady ? "found" : "MISSING");
+  Monitor.print(" motors=");
+  Monitor.print(motorReady ? "found" : "MISSING");
+  Monitor.print(" distance=");
+  Monitor.print(sensorReady ? "found" : "MISSING");
+  Monitor.print(" vibro=");
+  Monitor.println(vibroReady ? "found" : "MISSING");
 
   renderWheel();
   matrix.draw(frame);
@@ -248,30 +325,123 @@ void loop() {
     lastStep = millis();
   }
 
+  // Look again every 3 s for any module that is missing (supports hot-plug)
+  if ((!motorReady || !sensorReady || !vibroReady) && (now - lastRetryMs >= MODULE_RETRY_MS)) {
+    lastRetryMs = now;
+    if (!motorReady) {
+      motorReady = beginMotors();
+      if (motorReady) {
+        Monitor.println("[qcane-wheel] Modulino Motors connected");
+      }
+    }
+    if (!sensorReady) {
+      sensorReady = distance.begin();
+      if (sensorReady) {
+        Monitor.println("[qcane-wheel] Modulino Distance connected");
+      }
+    }
+    if (!vibroReady) {
+      vibroReady = vibro.begin();
+      if (vibroReady) {
+        Monitor.println("[qcane-wheel] Modulino Vibro connected");
+      }
+    }
+  }
+
+  // available() is true only when a NEW valid measurement arrived; no target
+  // in range produces no data at all. Gated so the animation's 5 ms loop does
+  // not multiply the I2C traffic.
+  if (sensorReady && (now - lastDistancePollMs >= DISTANCE_POLL_MS)) {
+    lastDistancePollMs = now;
+    if (distance.available()) {
+      lastMm = distance.get();
+      Bridge.notify("distance_reading", lastMm);
+    }
+  }
+
+  // Failsafe: without fresh commands from the Linux side, stop everything.
+  int effDir = wheelDir;
+  int effSpeed = wheelSpeed;
+  bool vibroTarget = desiredVibro;
+  if (lastCommandMs == 0 || (now - lastCommandMs) > COMMAND_TIMEOUT_MS) {
+    effDir = 0;
+    vibroTarget = false;
+  }
+
   // React to a new command: drive the motor, tell Python what actually got
   // applied, and log. All of it outside the bridge handler, where blocking and
   // nested RPCs are safe.
-  int dir = wheelDir;
-  int speed = wheelSpeed;
-  if (dir != appliedDir || speed != appliedSpeed) {
-    appliedDir = dir;
-    appliedSpeed = speed;
+  if (effDir != appliedDir || effSpeed != appliedSpeed) {
+    appliedDir = effDir;
+    appliedSpeed = effSpeed;
 
-    driveMotor(dir, speed);
+    driveMotor(effDir, effSpeed);
 
     // Fire-and-forget, so a Python side that is not listening cannot stall us.
     // motorReady rides along so the app can flag a missing Modulino.
-    Bridge.notify("wheel_applied", dir, speed, motorReady);
+    Bridge.notify("wheel_applied", effDir, effSpeed, motorReady);
 
     Monitor.print("[wheel] dir=");
-    Monitor.print(dir);
+    Monitor.print(effDir);
     Monitor.print(" speed=");
-    Monitor.println(speed);
+    Monitor.println(effSpeed);
+    dirty = true;
   }
 
-  if (wheelDir != 0 && (now - lastStep) >= stepIntervalMs(wheelSpeed)) {
+  // Proximity haptics: rhythmic pulses while an object is inside the
+  // threshold. Each pulse self-terminates after VIBRO_PULSE_MS, so a wedged
+  // loop cannot leave the vibro buzzing.
+  if (vibroReady) {
+    if (vibroTarget) {
+      if (!vibroActive || (now - lastPulseMs) >= VIBRO_PERIOD_MS) {
+        vibro.on(VIBRO_PULSE_MS);
+        lastPulseMs = now;
+        vibroActive = true;
+      }
+    } else if (vibroActive) {
+      vibro.off();
+      vibroActive = false;
+    }
+
+    // One-shot manual buzz requested from the dashboard
+    int pulse = pendingPulseMs;
+    if (pulse > 0) {
+      pendingPulseMs = 0;
+      vibro.on((size_t)pulse);
+    }
+  } else {
+    pendingPulseMs = 0;  // drop manual requests while the module is missing
+  }
+
+  // 2 Hz motor telemetry for the dashboard: current sense per channel (mA),
+  // what the sketch is actually applying (direction + signed duty), and the
+  // driver busy flag. The firmware does not report VM voltage; the signed
+  // duty is the applied differential output as a fraction of VM.
+  if (motorReady && (now - lastTelemetryMs >= TELEMETRY_MS)) {
+    lastTelemetryMs = now;
+    if (motors.update()) {
+      Bridge.notify("motor_telemetry",
+                    motors.sensedCurrentA(),
+                    motors.sensedCurrentB(),
+                    appliedDir == -99 ? 0 : appliedDir,
+                    appliedDutyPct(),
+                    vibroActive ? 1 : 0,
+                    motors.busy() ? 1 : 0);
+    }
+  }
+
+  // 1 Hz heartbeats so the Linux side can tell "no object" apart from "no
+  // sensor" and can show which modules are attached.
+  if (now - lastStatusMs >= 1000) {
+    lastStatusMs = now;
+    Bridge.notify("sensor_status", sensorReady);
+    Bridge.notify("actuator_status", (motorReady ? 1 : 0) | (vibroReady ? 2 : 0));
+  }
+
+  if (appliedDir != 0 && appliedDir != -99
+      && (now - lastStep) >= stepIntervalMs(appliedSpeed)) {
     lastStep = now;
-    head = ((head + wheelDir) % RING_LEN + RING_LEN) % RING_LEN;
+    head = ((head + appliedDir) % RING_LEN + RING_LEN) % RING_LEN;
     dirty = true;
   }
 

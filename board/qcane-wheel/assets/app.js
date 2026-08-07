@@ -17,6 +17,8 @@ const rawThr = $('raw-thr');
 const motStatus = $('mot-status');
 const motCmd = $('mot-cmd');
 const motApplied = $('mot-applied');
+const motSpeed = $('mot-speed');
+const caneDaemon = $('cane-daemon');
 const motMaA = $('mot-ma-a');
 const motMaB = $('mot-ma-b');
 const motDuty = $('mot-duty');
@@ -195,6 +197,9 @@ function render(d) {
   badge(motStatus, !!d.motors_ok, 'detected', 'not found');
   motCmd.textContent = motorWord(d.motor);
   motApplied.textContent = motorWord(d.motor_applied);
+  motSpeed.textContent = d.motor === 0 && d.motor_applied === 0
+    ? `${d.wheel_speed ?? '—'} (stopped)`
+    : `${d.wheel_speed ?? '—'} cmd / ${d.speed_applied ?? '—'} applied`;
   motMaA.textContent = fmtMa(d.motor_ma_a);
   motMaB.textContent = fmtMa(d.motor_ma_b);
   motDuty.textContent = fmtDutyRow(d.motor_duty_pct);
@@ -230,6 +235,7 @@ function render(d) {
   vibActive.textContent = d.vibro_active ? 'buzzing (proximity alert)' : 'idle';
 
   // Bluetooth card
+  badge(caneDaemon, !!d.cane_daemon, 'connected', 'not running');
   const bt = d.bt || {};
   btState.textContent = bt.connected
     ? 'connected'
