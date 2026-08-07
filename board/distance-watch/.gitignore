@@ -1,0 +1,9 @@
+# ignore app cache folder
+.cache/
+
+# runtime socket shared with the host Bluetooth daemon
+.run/
+
+# python bytecode
+__pycache__/
+*.pyc

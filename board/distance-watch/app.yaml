@@ -1,5 +1,18 @@
+# app.yaml: The main configuration file for your Arduino App.
+
+# The user-visible name of the application.
 name: Distance Watch
+
+# The icon for the application, can be an emoji or a short string.
 icon: 📏
-description: Live distance from the Modulino Distance sensor — big red light when an object is in front.
+
+# web_ui serves the QCane Link dashboard (port 7000): per-Modulino
+# informatics, live motor graphs, and manual wheel/vibro controls.
+# Bluetooth is NOT a brick: the phone (qhackGPS) talks to the host-side
+# Nordic UART bridge (../ble-bridge/), and the optional QCane GATT daemon
+# lives in host/qcane_btd.py — both run outside this container (no D-Bus
+# in here).
 bricks:
   - arduino:web_ui
+
+description: Merged cane board app — wheel steering from phone or dashboard, obstacle vibro from the distance Modulino, LED-matrix wheel display, and a live web dashboard.
