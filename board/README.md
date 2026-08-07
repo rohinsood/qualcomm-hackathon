@@ -159,9 +159,12 @@ curl -X POST localhost:7000/api/vibro -H 'Content-Type: application/json' -d '{"
 ```
 
 Actuator behavior lives at the top of `distance-watch/sketch/sketch.ino`:
-`MOTOR_SPEED_PCT` (steering spin speed, default 60 %), `VIBRO_PULSE_MS` /
-`VIBRO_PERIOD_MS` (haptic rhythm), and `COMMAND_TIMEOUT_MS` (failsafe stop
-when the Linux side goes quiet, default 2 s).
+`MOTOR_SPEED_PCT` (steering spin speed, default 100 % = full VM),
+`VIBRO_PULSE_MS` / `VIBRO_PERIOD_MS` (haptic rhythm), and
+`COMMAND_TIMEOUT_MS` (failsafe stop when the Linux side goes quiet, default
+2 s). The dashboard's applied-voltage graph scales by `MOTOR_VM_V` in
+`distance-watch/python/main.py` (5 V — the supply wired into the module's VM
+terminals; the module cannot measure VM itself).
 
 Quick motor test without a phone:
 `curl -X POST localhost:7000/api/phone -H 'Content-Type: application/json' -d '{"text":"left"}'`

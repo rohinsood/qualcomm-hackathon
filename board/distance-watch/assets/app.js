@@ -45,8 +45,15 @@ function fmtMa(ma) {
   return ma == null ? '—' : `${ma.toFixed(1)} mA`;
 }
 
-function fmtDuty(duty) {
-  return duty == null ? '—' : `${duty > 0 ? '+' : ''}${duty} % VM`;
+let vmV = 5;  // VM supply volts; refreshed from state (vm_v, set in main.py)
+
+function fmtVolt(v) {
+  return `${v > 0 ? '+' : ''}${v.toFixed(1)} V`;
+}
+
+function fmtDutyRow(duty) {
+  if (duty == null) return '—';
+  return `${fmtVolt((duty / 100) * vmV)} (${duty > 0 ? '+' : ''}${duty} %)`;
 }
 
 function motorWord(dir) {
@@ -73,14 +80,14 @@ const charts = {
   ma: {
     svg: $('chart-ma'), now: $('chart-ma-now'),
     yMax: $('chart-ma-max'), yMin: $('chart-ma-min'),
-    value: (p) => p.ma, fmt: fmtMa, cls: 'line-ma',
+    value: (p) => p.ma, fmt: fmtMa, yFmt: (v) => String(v), cls: 'line-ma',
     scale: (data) => ({ min: 0, max: niceCeil(Math.max(50, ...data.map((p) => p.ma))) }),
   },
   duty: {
     svg: $('chart-duty'), now: $('chart-duty-now'),
     yMax: $('chart-duty-max'), yMin: $('chart-duty-min'),
-    value: (p) => p.duty, fmt: fmtDuty, cls: 'line-duty',
-    scale: () => ({ min: -100, max: 100, zero: true }),
+    value: (p) => (p.duty / 100) * vmV, fmt: fmtVolt, yFmt: fmtVolt, cls: 'line-duty',
+    scale: () => ({ min: -vmV, max: vmV, zero: true }),
   },
 };
 
@@ -120,8 +127,8 @@ function drawChart(c) {
     parts += `<polyline class="${c.cls}" points="${pts}"/>`;
   }
   c.svg.innerHTML = parts;
-  c.yMax.textContent = c === charts.duty ? `+${max}` : `${max}`;
-  c.yMin.textContent = `${min}`;
+  c.yMax.textContent = c.yFmt(max);
+  c.yMin.textContent = c.yFmt(min);
   c.data = data;
   c.t0 = t0;
   if (!c.hovering) {
@@ -183,12 +190,13 @@ function render(d) {
   rawThr.textContent = d.threshold_mm != null ? `< ${d.threshold_mm.toFixed(0)} mm` : '—';
 
   // Motors card + button states
+  if (d.vm_v) vmV = d.vm_v;
   badge(motStatus, !!d.motors_ok, 'detected', 'not found');
   motCmd.textContent = motorWord(d.motor);
   motApplied.textContent = motorWord(d.motor_applied);
   motMaA.textContent = fmtMa(d.motor_ma_a);
   motMaB.textContent = fmtMa(d.motor_ma_b);
-  motDuty.textContent = fmtDuty(d.motor_duty_pct);
+  motDuty.textContent = fmtDutyRow(d.motor_duty_pct);
   motBusy.textContent = d.motor_busy ? 'yes' : 'no';
   btnLeft.setAttribute('aria-pressed', String(d.motor === -1));
   btnStop.setAttribute('aria-pressed', String(d.motor === 0));
