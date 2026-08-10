@@ -8,6 +8,10 @@ no subscription, no signal required. Built, printed, assembled, and walked with.
 
 ![Full assembly](Hardware/CAD/Assembly.png)
 
+**Demo Video**
+
+https://github.com/user-attachments/assets/4f166f12-43d0-46fc-8983-bd9591bafe06
+
 **Snapdragon Multiverse Hackathon 2026** · Qualcomm San Diego
 
 | | |
