@@ -1,4 +1,7 @@
-# Lighthouse
+# Lighthouse 🔦 | Qualcomm Multiverse Hackathon Finalist
+
+|<img src="https://cap.csail.mit.edu/sites/default/files/2025-11/hackathon.png" width="500">  |  <img src="Hardware/CAD/Assembly.png" width="500">|
+:-------------------------:|:-------------------------:
 
 **An open-source self-steering white cane powered by on-device AI.**
 
@@ -6,7 +9,6 @@ A 3D-printed omni wheel at the cane tip physically steers the user around
 obstacles and along walking routes. All AI runs on Qualcomm silicon — no cloud,
 no subscription, no signal required. Built, printed, assembled, and walked with.
 
-![Full assembly](Hardware/CAD/Assembly.png)
 
 **Demo Video**
 
