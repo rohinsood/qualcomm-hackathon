@@ -25,7 +25,7 @@ no subscription, no signal required. Built, printed, assembled, and walked with.
 | Name | Github |
 |---|---|
 | Rohin Sood | https://github.com/rohinsood |
-| Manuel Rodrigues | https://github.com/MaRodriguezB777 |
+| Manuel Rodriguez | https://github.com/MaRodriguezB777 |
 | Venkata Yaswanth Kanduri | https://github.com/kvyaswanth |
 | Noah Zhang | https://github.com/iujab |
 
